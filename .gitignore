@@ -70,3 +70,4 @@ output.txt
 # *.onnx
 
 .github
+**/logs/*

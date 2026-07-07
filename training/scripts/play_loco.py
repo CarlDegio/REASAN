@@ -12,6 +12,7 @@ from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
+from reasan_kit_args import apply_default_reasan_kit_args  # isort: skip
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -26,6 +27,7 @@ cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+apply_default_reasan_kit_args(args_cli, __file__)
 
 # always enable cameras to record video
 if args_cli.video:
@@ -54,6 +56,8 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 from isaaclab_rl.rsl_rl.exporter import export_policy_as_jit, export_policy_as_onnx
 from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 from rsl_rl.runners import OnPolicyRunnerLoco
+
+torch.backends.cudnn.enabled = False
 
 
 def main():
