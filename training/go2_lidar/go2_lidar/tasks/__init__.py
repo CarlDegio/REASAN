@@ -2,12 +2,24 @@ import gymnasium as gym
 
 # flake8: noqa F401
 from . import (
+    g1_loco_env,
+    g1_loco_ppo_cfg,
     go2_filter_env,
     go2_filter_ppo_cfg,
     go2_loco_env,
     go2_loco_ppo_cfg,
     go2_nav_env,
     go2_nav_ppo_cfg,
+)
+
+gym.register(
+    id="Unitree-G1-Locomotion",
+    entry_point=f"{__name__}.g1_loco_env:G1LocoEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.g1_loco_env_cfg:G1LocoEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{__name__}.g1_loco_ppo_cfg:G1LocoPPOCfg",
+    },
 )
 
 gym.register(

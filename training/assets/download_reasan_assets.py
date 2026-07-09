@@ -28,6 +28,10 @@ from pathlib import Path
 
 DEFAULT_REMOTE_ROOT = "http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.5"
 DEFAULT_LOCAL_ROOT = Path(__file__).resolve().parent / "omniverse" / "Assets" / "Isaac" / "4.5"
+DEFAULT_UNITREE_MODEL_REMOTE_ROOT = "https://huggingface.co/datasets/unitreerobotics/unitree_model/resolve/main"
+DEFAULT_UNITREE_MODEL_LOCAL_ROOT = Path(__file__).resolve().parent / "unitree_model"
+DEFAULT_UNITREE_RL_LAB_REMOTE_ROOT = "https://raw.githubusercontent.com/unitreerobotics/unitree_rl_lab/main"
+DEFAULT_UNITREE_RL_LAB_LOCAL_ROOT = Path(__file__).resolve().parent / "unitree_rl_lab"
 
 DEFAULT_ASSETS = (
     # Unitree Go2 is used by all REASAN Go2 tasks through UNITREE_GO2_CFG.
@@ -40,6 +44,20 @@ DEFAULT_ASSETS = (
     # Debug visualization markers used by IsaacLab/REASAN play environments.
     "Isaac/Props/UIElements/arrow_x.usd",
     "Isaac/Props/UIElements/frame_prim.usd",
+)
+
+DEFAULT_UNITREE_MODEL_ASSETS = (
+    # Unitree G1 29dof humanoid locomotion task uses the no-finger 29dof asset from unitree_model.
+    "G1/29dof/usd/g1_29dof_rev_1_0/g1_29dof_rev_1_0.usd",
+    "G1/29dof/usd/g1_29dof_rev_1_0/configuration/g1_29dof_rev_1_0_base.usd",
+    "G1/29dof/usd/g1_29dof_rev_1_0/configuration/g1_29dof_rev_1_0_physics.usd",
+    "G1/29dof/usd/g1_29dof_rev_1_0/configuration/g1_29dof_rev_1_0_sensor.usd",
+)
+
+DEFAULT_UNITREE_RL_LAB_ASSETS = (
+    # Official Unitree G1 29dof velocity deployment policy and metadata.
+    "deploy/robots/g1_29dof/config/policy/velocity/v0/exported/policy.onnx",
+    "deploy/robots/g1_29dof/config/policy/velocity/v0/params/deploy.yaml",
 )
 
 REFERENCE_EXTENSIONS = (
@@ -75,11 +93,11 @@ LOCAL_PATH_PREFIXES = (
     "Volumes/",
 )
 
+REFERENCE_EXT_PATTERN = b"|".join(ext.encode("ascii") for ext in REFERENCE_EXTENSIONS)
 REFERENCE_RE = re.compile(
-    rb"""(?P<path>(?:[A-Za-z0-9_.%+\-]+/|\./|\../)+[A-Za-z0-9_.%+\-]+"""
-    + rb"""\.(?:"""
-    + b"|".join(ext.encode("ascii") for ext in REFERENCE_EXTENSIONS)
-    + rb"""))"""
+    rb"(?P<path>(?:(?:[A-Za-z0-9_.%+\-]+/|\./|\../)+[A-Za-z0-9_.%+\-]+\.(?:"
+    + REFERENCE_EXT_PATTERN
+    + rb")|[A-Za-z0-9_.%+\-]+\.(?:usd|usda|usdc)))"
 )
 
 
@@ -280,12 +298,15 @@ def download_asset(
     return urllib_download(url, destination, proxy, force)
 
 
-def main() -> int:
-    args = parse_args()
-    remote_root = args.remote_root.rstrip("/")
-    local_root = args.local_root.resolve()
-    requested = [normalize_asset_path(path) for path in (*DEFAULT_ASSETS, *args.asset)]
-
+def download_manifest(
+    requested: list[str],
+    remote_root: str,
+    local_root: Path,
+    proxy: str | None,
+    force: bool,
+    no_recursive: bool,
+    use_urllib: bool,
+) -> tuple[int, list[str]]:
     queue: deque[str] = deque(requested)
     seen: set[str] = set()
     failed: list[str] = []
@@ -300,23 +321,68 @@ def main() -> int:
             asset_path=asset_path,
             remote_root=remote_root,
             local_root=local_root,
-            proxy=args.proxy,
-            force=args.force,
-            use_urllib=args.use_urllib,
+            proxy=proxy,
+            force=force,
+            use_urllib=use_urllib,
         )
         if not ok:
             failed.append(asset_path)
             continue
 
-        if args.no_recursive:
+        if no_recursive:
             continue
         local_path = to_local_path(local_root, asset_path)
         for ref in sorted(extract_references(local_path, asset_path, remote_root)):
             if ref not in seen:
                 queue.append(ref)
 
+    return len(seen) - len(failed), failed
+
+
+def main() -> int:
+    args = parse_args()
+    remote_root = args.remote_root.rstrip("/")
+    local_root = args.local_root.resolve()
+    requested = [normalize_asset_path(path) for path in (*DEFAULT_ASSETS, *args.asset)]
+    unitree_model_root = DEFAULT_UNITREE_MODEL_LOCAL_ROOT.resolve()
+    unitree_requested = [normalize_asset_path(path) for path in DEFAULT_UNITREE_MODEL_ASSETS]
+    unitree_rl_lab_root = DEFAULT_UNITREE_RL_LAB_LOCAL_ROOT.resolve()
+    unitree_rl_lab_requested = [normalize_asset_path(path) for path in DEFAULT_UNITREE_RL_LAB_ASSETS]
+
+    downloaded, failed = download_manifest(
+        requested=requested,
+        remote_root=remote_root,
+        local_root=local_root,
+        proxy=args.proxy,
+        force=args.force,
+        no_recursive=args.no_recursive,
+        use_urllib=args.use_urllib,
+    )
+    unitree_downloaded, unitree_failed = download_manifest(
+        requested=unitree_requested,
+        remote_root=DEFAULT_UNITREE_MODEL_REMOTE_ROOT,
+        local_root=unitree_model_root,
+        proxy=args.proxy,
+        force=args.force,
+        no_recursive=args.no_recursive,
+        use_urllib=args.use_urllib,
+    )
+    failed.extend(f"unitree_model:{asset_path}" for asset_path in unitree_failed)
+    unitree_rl_lab_downloaded, unitree_rl_lab_failed = download_manifest(
+        requested=unitree_rl_lab_requested,
+        remote_root=DEFAULT_UNITREE_RL_LAB_REMOTE_ROOT,
+        local_root=unitree_rl_lab_root,
+        proxy=args.proxy,
+        force=args.force,
+        no_recursive=True,
+        use_urllib=args.use_urllib,
+    )
+    failed.extend(f"unitree_rl_lab:{asset_path}" for asset_path in unitree_rl_lab_failed)
+
     print()
-    print(f"Downloaded or verified {len(seen) - len(failed)} assets under: {local_root}")
+    print(f"Downloaded or verified {downloaded} Isaac assets under: {local_root}")
+    print(f"Downloaded or verified {unitree_downloaded} Unitree model assets under: {unitree_model_root}")
+    print(f"Downloaded or verified {unitree_rl_lab_downloaded} Unitree RL Lab assets under: {unitree_rl_lab_root}")
     if args.print_kit_args:
         print()
         print(f'--kit_args "--/persistent/isaac/asset_root/cloud={local_root}"')
