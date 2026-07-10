@@ -52,3 +52,28 @@ def test_g1_loco_files_and_registration_are_present():
     assert "SessionOptions" in unitree_play_script
     assert "intra_op_num_threads" in unitree_play_script
     assert "inter_op_num_threads" in unitree_play_script
+
+
+def test_g1_loco_push_and_command_curriculum_matches_humanoid_ranges():
+    tasks_dir = ROOT / "go2_lidar" / "go2_lidar" / "tasks"
+    env_cfg = (tasks_dir / "g1_loco_env_cfg.py").read_text()
+    env = (tasks_dir / "g1_loco_env.py").read_text()
+
+    assert 'interval_range_s=(5.0, 5.0)' in env_cfg
+    assert '"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}' in env_cfg
+    assert "cmd_lin_vel_x_range = (-0.5, 0.5)" in env_cfg
+    assert "cmd_lin_vel_y_range = (-0.1, 0.1)" in env_cfg
+    assert "cmd_ang_vel_z_range = (-0.4, 0.4)" in env_cfg
+
+    assert "self.events.push_robot.interval_range_s = (3.0, 3.0)" in env_cfg
+    assert 'self.events.push_robot.params["velocity_range"] = {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}' in env_cfg
+    assert "self.cmd_lin_vel_x_range = (-1.0, 1.0)" in env_cfg
+    assert "self.cmd_lin_vel_y_range = (-0.3, 0.3)" in env_cfg
+    assert "self.cmd_ang_vel_z_range = (-1.0, 1.0)" in env_cfg
+    assert "self.cmd_resample_interval = (2.0, 3.0)" in env_cfg
+
+    assert "self._cmd_lower" in env
+    assert "self._cmd_upper" in env
+    assert "self.cfg.standing_command_probability" in env
+    assert "new_commands[:, 0] = new_commands[:, 0].abs()" not in env
+    assert "new_commands[:, 1] = 0.0" not in env

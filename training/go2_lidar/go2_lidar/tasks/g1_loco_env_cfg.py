@@ -175,7 +175,7 @@ class G1EventCfg:
         mode="interval",
         interval_range_s=(5.0, 5.0),
         params={
-            "velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)},
+            "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)},
             "asset_cfg": SceneEntityCfg("robot"),
         },
     )
@@ -209,6 +209,10 @@ class G1LocoEnvCfg(DirectRLEnvCfg):
     is_second_stage = False
 
     cmd_resample_interval = (4.0, 4.0)
+    cmd_lin_vel_x_range = (-0.5, 0.5)
+    cmd_lin_vel_y_range = (-0.1, 0.1)
+    cmd_ang_vel_z_range = (-0.4, 0.4)
+    standing_command_probability = 0.02
 
     scene = InteractiveSceneCfg(num_envs=4096, env_spacing=10, replicate_physics=False)
     events: G1EventCfg = G1EventCfg()
@@ -252,6 +256,9 @@ class G1LocoEnvCfg(DirectRLEnvCfg):
 
     def set_second_stage(self):
         self.is_second_stage = True
-        self.events.push_robot.interval_range_s = (2.0, 2.0)
-        self.events.push_robot.params["velocity_range"] = {"x": (-1.5, 1.5), "y": (-1.5, 1.5)}
+        self.events.push_robot.interval_range_s = (3.0, 3.0)
+        self.events.push_robot.params["velocity_range"] = {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}
         self.cmd_resample_interval = (2.0, 3.0)
+        self.cmd_lin_vel_x_range = (-1.0, 1.0)
+        self.cmd_lin_vel_y_range = (-0.3, 0.3)
+        self.cmd_ang_vel_z_range = (-1.0, 1.0)

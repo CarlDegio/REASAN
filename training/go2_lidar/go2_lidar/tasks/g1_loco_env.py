@@ -82,8 +82,22 @@ class G1LocoEnv(DirectRLEnv):
         self._cmd_ang_vel = torch.zeros(self.num_envs, 1, device=self.device)
         self._cmd_resample_intervals = torch.zeros(self.num_envs, 1, device=self.device)
         self._cmd_resample_accums = torch.zeros(self.num_envs, 1, device=self.device)
-        self._cmd_commands = torch.tensor([1.0, 0.0, 1.0], device=self.device)
-        self._cmd_not_zero_out_prob = torch.tensor([0.98, 0.0, 0.98], device=self.device)
+        self._cmd_lower = torch.tensor(
+            [
+                self.cfg.cmd_lin_vel_x_range[0],
+                self.cfg.cmd_lin_vel_y_range[0],
+                self.cfg.cmd_ang_vel_z_range[0],
+            ],
+            device=self.device,
+        )
+        self._cmd_upper = torch.tensor(
+            [
+                self.cfg.cmd_lin_vel_x_range[1],
+                self.cfg.cmd_lin_vel_y_range[1],
+                self.cfg.cmd_ang_vel_z_range[1],
+            ],
+            device=self.device,
+        )
         self._reset_commands()
 
         self._show_debug_viz = False
@@ -407,15 +421,10 @@ class G1LocoEnv(DirectRLEnv):
             return
 
         new_commands = math_utils.sample_uniform(
-            -self._cmd_commands, self._cmd_commands, (num_resets, 3), device=self.device
+            self._cmd_lower, self._cmd_upper, (num_resets, 3), device=self.device
         )
-        new_commands[:, 0] = new_commands[:, 0].abs()
-        new_commands[:, 1] = 0.0
-        zero_out = (
-            math_utils.sample_uniform(0.0, 1.0, (num_resets, 3), device=self.device)
-            > self._cmd_not_zero_out_prob[None, :]
-        )
-        new_commands[zero_out] = 0.0
+        standing_commands = torch.rand(num_resets, device=self.device) < self.cfg.standing_command_probability
+        new_commands[standing_commands] = 0.0
         self._cmd_lin_vel[masks, :2] = new_commands[:, :2]
         self._cmd_ang_vel[masks, 0] = new_commands[:, 2]
 
