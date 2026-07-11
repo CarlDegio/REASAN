@@ -131,8 +131,8 @@ class G1EventCfg:
         mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
-            "force_range": (-1.0, 1.0),
-            "torque_range": (-1.0, 1.0),
+            "force_range": (0.0, 0.0),
+            "torque_range": (0.0, 0.0),
         },
     )
 
@@ -204,9 +204,10 @@ class G1LocoEnvCfg(DirectRLEnvCfg):
     observation_space = 96
     state_space = 0
     action_space = 29
-    action_scale = 0.5
+    action_scale = 0.25
     is_play_env = False
     is_second_stage = False
+    push_enabled = False
 
     cmd_resample_interval = (4.0, 4.0)
     cmd_lin_vel_x_range = (-0.5, 0.5)
@@ -253,11 +254,14 @@ class G1LocoEnvCfg(DirectRLEnvCfg):
     def __post_init__(self):
         self.sim.render_interval = self.decimation
         self.contact_sensor.update_period = self.sim.dt
+        if not self.push_enabled:
+            self.events.push_robot = None
 
     def set_second_stage(self):
         self.is_second_stage = True
-        self.events.push_robot.interval_range_s = (3.0, 3.0)
-        self.events.push_robot.params["velocity_range"] = {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}
+        if self.events.push_robot is not None:
+            self.events.push_robot.interval_range_s = (3.0, 3.0)
+            self.events.push_robot.params["velocity_range"] = {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}
         self.cmd_resample_interval = (2.0, 3.0)
         self.cmd_lin_vel_x_range = (-1.0, 1.0)
         self.cmd_lin_vel_y_range = (-0.3, 0.3)

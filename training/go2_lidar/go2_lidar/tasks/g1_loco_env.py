@@ -60,14 +60,12 @@ class G1LocoEnv(DirectRLEnv):
 
         self._base_id_cs, _ = self._contact_sensor.find_bodies("torso_link")
         self._feet_ids_cs, _ = self._contact_sensor.find_bodies(".*_ankle_roll_link")
-        self._undesired_contact_body_ids_cs, _ = self._contact_sensor.find_bodies(
-            "torso_link|.*_hip_.*|.*_knee.*|.*_shoulder.*|.*_elbow.*"
-        )
+        self._undesired_contact_body_ids_cs, _ = self._contact_sensor.find_bodies("(?!.*ankle.*).*")
         self._feet_ids_bd, _ = self._robot.find_bodies(".*_ankle_roll_link")
         self._ankle_ids_jt, _ = self._robot.find_joints(".*_ankle_.*")
         self._hip_ids_jt = self._find_joints(".*_hip_(yaw|roll)_joint")
         self._leg_ids_jt = self._find_joints(".*_hip_.*|.*_knee_joint")
-        self._energy_ids_jt = self._find_joints(".*_hip_.*|.*_knee_joint|.*_ankle_.*")
+        self._energy_ids_jt = self._controlled_joint_ids.copy()
         self._arm_ids_jt = self._find_joints(
             ".*_shoulder_pitch_joint|.*_shoulder_roll_joint|.*_shoulder_yaw_joint|"
             ".*_elbow_joint|.*_elbow_pitch_joint|.*_elbow_roll_joint|.*_wrist_roll_joint|"
@@ -211,11 +209,11 @@ class G1LocoEnv(DirectRLEnv):
 
         noise_buf = torch.cat(
             [
-                torch.ones(3) * 0.2,
+                torch.ones(3) * 0.2 * 0.2,
                 torch.ones(3) * 0.05,
                 torch.zeros(3),
                 torch.ones(self._num_actions) * 0.01,
-                torch.ones(self._num_actions) * 1.5 * 0.5,
+                torch.ones(self._num_actions) * 1.5 * 0.05,
                 torch.zeros(self._num_actions),
             ],
             dim=0,
@@ -258,10 +256,10 @@ class G1LocoEnv(DirectRLEnv):
         r_action_rate = torch.sum(torch.square(self._actions - self._previous_actions[-1]), dim=1)
         r_action_rate *= -0.05
 
-        ankle_pos = self._robot.data.joint_pos[:, self._ankle_ids_jt]
-        ankle_pos_limits = self._robot.data.soft_joint_pos_limits[:, self._ankle_ids_jt]
-        out_of_limits = -(ankle_pos - ankle_pos_limits[..., 0]).clip(max=0.0)
-        out_of_limits += (ankle_pos - ankle_pos_limits[..., 1]).clip(min=0.0)
+        joint_pos = self._robot.data.joint_pos[:, self._controlled_joint_ids]
+        joint_pos_limits = self._robot.data.soft_joint_pos_limits[:, self._controlled_joint_ids]
+        out_of_limits = -(joint_pos - joint_pos_limits[..., 0]).clip(max=0.0)
+        out_of_limits += (joint_pos - joint_pos_limits[..., 1]).clip(min=0.0)
         r_dof_pos_limits = torch.sum(out_of_limits, dim=1)
         r_dof_pos_limits *= -5.0
 
@@ -287,21 +285,21 @@ class G1LocoEnv(DirectRLEnv):
         r_base_height = torch.square(self._robot.data.root_pos_w[:, 2] - 0.78)
         r_base_height *= -10.0
 
-        contact = torch.norm(self._contact_sensor.data.net_forces_w[:, self._feet_ids_cs, :], dim=-1) > 1.0
-        r_feet_gait = self._feet_gait_reward(contact, period=0.8, threshold=0.55)
+        gait_contact = self._contact_sensor.data.current_contact_time[:, self._feet_ids_cs] > 0.0
+        r_feet_gait = self._feet_gait_reward(gait_contact, period=0.8, threshold=0.55)
         r_feet_gait *= 0.5
         r_feet_gait[cmd_norm < 0.1] = 0.0
 
+        contact = torch.norm(self._contact_sensor.data.net_forces_w[:, self._feet_ids_cs, :], dim=-1) > 1.0
         feet_vel = self._robot.data.body_lin_vel_w[:, self._feet_ids_bd, :]
         r_feet_slide = torch.sum(torch.norm(feet_vel[..., :2], dim=-1) * contact, dim=1)
         r_feet_slide *= -0.2
 
         foot_z = self._robot.data.body_pos_w[:, self._feet_ids_bd, 2] - self._terrain.env_origins[:, 2].unsqueeze(-1)
         foot_xy_speed = torch.norm(feet_vel[..., :2], dim=-1)
-        clearance_error = torch.square(foot_z - 0.1) * torch.tanh(foot_xy_speed)
+        clearance_error = torch.square(foot_z - 0.1) * torch.tanh(2.0 * foot_xy_speed)
         r_feet_clearance = torch.exp(-torch.sum(clearance_error, dim=1) / 0.05)
         r_feet_clearance *= 1.0
-        r_feet_clearance[cmd_norm < 0.1] = 0.0
 
         net_contact_forces = self._contact_sensor.data.net_forces_w_history
         r_undesired_contacts = torch.sum(
@@ -457,7 +455,7 @@ class G1LocoEnv(DirectRLEnv):
         desired_contact = torch.stack([desired_left, desired_right], dim=1)
         if contact.shape[1] != 2:
             return torch.zeros(self.num_envs, device=self.device)
-        return torch.mean((contact == desired_contact).float(), dim=1)
+        return torch.sum((contact == desired_contact).float(), dim=1)
 
     def _resolve_xy_velocity_to_arrow(self, xy_velocity: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         default_scale = self._goal_vel_viz.cfg.markers["arrow"].scale
