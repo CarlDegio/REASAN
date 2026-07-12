@@ -87,6 +87,8 @@ parser.add_argument("--second_stage", action="store_true", default=False, help="
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.second_stage:
+    parser.error("This manual test only supports first-stage settings.")
 apply_default_reasan_kit_args(args_cli, __file__)
 
 os.chdir(TRAINING_DIR)
@@ -119,6 +121,7 @@ simulation_app = app_launcher.app
 
 import go2_lidar.tasks  # noqa: E402,F401
 import gymnasium as gym  # noqa: E402
+import isaaclab.utils.math as math_utils  # noqa: E402
 import torch  # noqa: E402
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 
@@ -248,6 +251,53 @@ def _append_unitree_history(history: dict[str, deque[torch.Tensor]], obs_terms: 
         history[term_name].append(obs_terms[term_name].clone())
 
 
+def _print_velocity_triplets(
+    label: str,
+    sim_time_s: float,
+    velocities: torch.Tensor,
+    env_ids: torch.Tensor | None = None,
+    show_env_ids: bool = False,
+    durations_s: torch.Tensor | None = None,
+):
+    values = velocities.detach().cpu().tolist()
+    if env_ids is None:
+        ids = list(range(len(values)))
+    else:
+        ids = env_ids.detach().cpu().tolist()
+    if durations_s is None:
+        durations = [None] * len(values)
+    else:
+        durations = durations_s.detach().cpu().tolist()
+
+    for env_id, (vx, vy, wz), duration_s in zip(ids, values, durations, strict=True):
+        env_text = f" env={env_id}" if show_env_ids else ""
+        duration_text = f" dt={duration_s:.2f}s" if duration_s is not None else ""
+        print(
+            f"[{label:<7} t={sim_time_s:7.2f}s{duration_text}]"
+            f"{env_text} vx={vx:+.3f} vy={vy:+.3f} wz={wz:+.3f}"
+        )
+
+
+def _compute_average_body_velocity(
+    start_pos_w: torch.Tensor,
+    start_yaw_w: torch.Tensor,
+    end_pos_w: torch.Tensor,
+    end_yaw_w: torch.Tensor,
+    elapsed_s: torch.Tensor,
+) -> torch.Tensor:
+    displacement_xy_w = end_pos_w[:, :2] - start_pos_w[:, :2]
+    cos_yaw = torch.cos(start_yaw_w)
+    sin_yaw = torch.sin(start_yaw_w)
+    displacement_x_b = cos_yaw * displacement_xy_w[:, 0] + sin_yaw * displacement_xy_w[:, 1]
+    displacement_y_b = -sin_yaw * displacement_xy_w[:, 0] + cos_yaw * displacement_xy_w[:, 1]
+
+    yaw_delta = end_yaw_w - start_yaw_w
+    yaw_delta = torch.atan2(torch.sin(yaw_delta), torch.cos(yaw_delta))
+    return torch.stack(
+        [displacement_x_b / elapsed_s, displacement_y_b / elapsed_s, yaw_delta / elapsed_s], dim=-1
+    )
+
+
 def _validate_shapes(history_obs: torch.Tensor, action_dim: int, onnx_metadata):
     expected_dim = UNITREE_SINGLE_FRAME_OBS_DIM * UNITREE_OBS_HISTORY_LENGTH
     if history_obs.shape[-1] != expected_dim:
@@ -280,11 +330,20 @@ def main():
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.seed = args_cli.seed
     env_cfg.is_play_env = True
-    if args_cli.second_stage:
-        env_cfg.set_second_stage()
+    env_cfg.cmd_lin_vel_x_range = (-0.5, 1.0)
+    env_cfg.cmd_lin_vel_y_range = (-0.3, 0.3)
+    env_cfg.cmd_ang_vel_z_range = (-0.2, 0.2)
 
     env = gym.make(TASK_NAME, cfg=env_cfg, render_mode=None)
     env.reset()
+
+    show_env_ids = env.unwrapped.num_envs > 1
+    target_velocities = torch.cat([env.unwrapped._cmd_lin_vel, env.unwrapped._cmd_ang_vel], dim=-1)
+    _print_velocity_triplets("TARGET", 0.0, target_velocities, show_env_ids=show_env_ids)
+    robot_data = env.unwrapped._robot.data
+    window_start_pos_w = robot_data.root_com_pos_w.clone()
+    window_start_yaw_w = math_utils.euler_xyz_from_quat(robot_data.root_com_quat_w)[2].clone()
+    window_start_time_s = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device)
 
     action_dim = gym.spaces.flatdim(env.unwrapped.single_action_space)
     deploy_cfg = _load_deploy_cfg(args_cli.deploy_cfg, action_dim)
@@ -310,12 +369,52 @@ def main():
     step = 0
     with torch.inference_mode():
         while simulation_app.is_running() and step < args_cli.steps:
+            previous_cmd_resample_accums = env.unwrapped._cmd_resample_accums.clone()
             onnx_input = history_obs.detach().cpu().numpy().astype("float32")
             onnx_actions = session.run([onnx_output_name], {onnx_input_name: onnx_input})[0]
             if onnx_actions.shape[-1] != action_dim:
                 raise RuntimeError(f"ONNX returned action dim {onnx_actions.shape[-1]}, expected {action_dim}.")
             actions = torch.as_tensor(onnx_actions, dtype=torch.float32, device=env.unwrapped.device)
             _, _, terminated, truncated, _ = env.step(actions)
+
+            sim_time_s = (step + 1) * env.unwrapped.step_dt
+            current_cmd_resample_accums = env.unwrapped._cmd_resample_accums
+            resampled_envs = (current_cmd_resample_accums < previous_cmd_resample_accums).squeeze(-1)
+            reset_envs = (terminated | truncated).squeeze()
+            resampled_envs |= reset_envs
+            if torch.any(resampled_envs):
+                completed_envs = resampled_envs & ~reset_envs
+                if torch.any(completed_envs):
+                    completed_env_ids = torch.nonzero(completed_envs, as_tuple=False).squeeze(-1)
+                    end_pos_w = robot_data.root_com_pos_w[completed_env_ids]
+                    end_yaw_w = math_utils.euler_xyz_from_quat(robot_data.root_com_quat_w[completed_env_ids])[2]
+                    durations_s = sim_time_s - window_start_time_s[completed_env_ids]
+                    average_velocities = _compute_average_body_velocity(
+                        window_start_pos_w[completed_env_ids],
+                        window_start_yaw_w[completed_env_ids],
+                        end_pos_w,
+                        end_yaw_w,
+                        durations_s,
+                    )
+                    _print_velocity_triplets(
+                        "AVERAGE",
+                        sim_time_s,
+                        average_velocities,
+                        env_ids=completed_env_ids,
+                        show_env_ids=show_env_ids,
+                        durations_s=durations_s,
+                    )
+
+                env_ids = torch.nonzero(resampled_envs, as_tuple=False).squeeze(-1)
+                window_start_pos_w[env_ids] = robot_data.root_com_pos_w[env_ids]
+                window_start_yaw_w[env_ids] = math_utils.euler_xyz_from_quat(robot_data.root_com_quat_w[env_ids])[2]
+                window_start_time_s[env_ids] = sim_time_s
+                target_velocities = torch.cat(
+                    [env.unwrapped._cmd_lin_vel[env_ids], env.unwrapped._cmd_ang_vel[env_ids]], dim=-1
+                )
+                _print_velocity_triplets(
+                    "TARGET", sim_time_s, target_velocities, env_ids=env_ids, show_env_ids=show_env_ids
+                )
 
             obs_terms = _build_unitree_obs_terms(env)
             _append_unitree_history(history, obs_terms)
