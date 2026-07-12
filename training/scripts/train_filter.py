@@ -25,6 +25,8 @@ parser.add_argument("--confirm", action="store_true", default=False)
 parser.add_argument("--obst_speed_range", type=float, nargs=2, default=(0.5, 1.2))
 parser.add_argument("--num_ray_centers", type=str, default="1x", choices=["1x", "3x", "5x", "11x"])
 parser.add_argument("--wandb_proj", type=str, default=None)
+parser.add_argument("--task", type=str, default="Unitree-Go2-Filter")
+parser.add_argument("--loco_checkpoint", type=str, default="")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -37,7 +39,7 @@ args_cli, hydra_args = parser.parse_known_args()
 args_cli.headless = not args_cli.gui
 
 # set task name
-task_name = "Unitree-Go2-Filter"
+task_name = args_cli.task
 print("=" * 50)
 print("Training filter policy.")
 print("=" * 50)
@@ -116,6 +118,8 @@ def main():
     env_cfg.wait_for_key = not args_cli.confirm
     env_cfg.obst_speed_range = args_cli.obst_speed_range
     env_cfg.set_raycaster_measure_pattern(args_cli.num_ray_centers)
+    if hasattr(env_cfg, "loco_checkpoint"):
+        env_cfg.loco_checkpoint = args_cli.loco_checkpoint
 
     # create environment
     env = gym.make(task_name, cfg=env_cfg, render_mode=None)

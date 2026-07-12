@@ -39,26 +39,7 @@ class Go2FilterEnv(DirectRLEnv):
         print("Initializing training environment...")
         super().__init__(cfg, render_mode, **kwargs)
 
-        loco_policy_path = "./logs/rsl_rl/go2_lidar/loco_1/exported/policy.pt"
-        print(f"Loading locomotion policy from: {loco_policy_path}")
-        self._loco_policy = torch.jit.load(loco_policy_path)
-        self._loco_policy.to(self.device).eval()
-        for param in self._loco_policy.parameters():
-            param.requires_grad = False
-        hidden_state_shape = self._loco_policy.hidden_state.shape
-        cell_state_shape = self._loco_policy.cell_state.shape
-        self._loco_policy.hidden_state = torch.zeros(
-            hidden_state_shape[0],
-            self.num_envs,
-            hidden_state_shape[2],
-            device=self.device,
-        )
-        self._loco_policy.cell_state = torch.zeros(
-            cell_state_shape[0],
-            self.num_envs,
-            cell_state_shape[2],
-            device=self.device,
-        )
+        self._initialize_loco_policy()
         self._wait_for_key()
 
         self._ray_predictor = None
@@ -83,9 +64,7 @@ class Go2FilterEnv(DirectRLEnv):
         self._init_physx_material_buffer()
         self._reset_physx_materials(torch.ones(self.num_envs, device="cpu", dtype=torch.bool))
 
-        for _, v in self._robot.actuators.items():
-            v.stiffness[:] = (torch.rand_like(v.stiffness) * 0.2 + 0.9) * 35.0
-            v.damping[:] = (torch.rand_like(v.damping) * 0.2 + 0.9) * 0.5
+        self._configure_actuator_gains()
 
         self._first_reset = True
 
@@ -99,19 +78,7 @@ class Go2FilterEnv(DirectRLEnv):
 
         self._obs_buf = torch.zeros(self.num_envs, self.cfg.observation_space, device=self.device)
 
-        self._base_id_cs, _ = self._contact_sensor.find_bodies("base")
-        self._feet_ids_cs, _ = self._contact_sensor.find_bodies(".*foot")
-        self._undesired_contact_body_ids_cs, _ = self._contact_sensor.find_bodies(
-            [
-                ".*thigh",
-                ".*calf",
-                "base",
-                ".*hip",
-                "Head.*",
-            ]
-        )
-        self._feet_ids_bd, _ = self._robot.find_bodies(".*foot")
-        self._hip_ids_jt, _ = self._robot.find_joints(".*hip.*")
+        self._configure_robot_indices()
 
         self._episode_sums = {}
         self._step_counter = 0
@@ -195,6 +162,36 @@ class Go2FilterEnv(DirectRLEnv):
 
         self._update_debug_draw()
         self.setup_ui()
+
+    def _initialize_loco_policy(self):
+        loco_policy_path = "./logs/rsl_rl/go2_lidar/loco_1/exported/policy.pt"
+        print(f"Loading locomotion policy from: {loco_policy_path}")
+        self._loco_policy = torch.jit.load(loco_policy_path)
+        self._loco_policy.to(self.device).eval()
+        for param in self._loco_policy.parameters():
+            param.requires_grad = False
+        hidden_state_shape = self._loco_policy.hidden_state.shape
+        cell_state_shape = self._loco_policy.cell_state.shape
+        self._loco_policy.hidden_state = torch.zeros(
+            hidden_state_shape[0], self.num_envs, hidden_state_shape[2], device=self.device
+        )
+        self._loco_policy.cell_state = torch.zeros(
+            cell_state_shape[0], self.num_envs, cell_state_shape[2], device=self.device
+        )
+
+    def _configure_robot_indices(self):
+        self._base_id_cs, _ = self._contact_sensor.find_bodies("base")
+        self._feet_ids_cs, _ = self._contact_sensor.find_bodies(".*foot")
+        self._undesired_contact_body_ids_cs, _ = self._contact_sensor.find_bodies(
+            [".*thigh", ".*calf", "base", ".*hip", "Head.*"]
+        )
+        self._feet_ids_bd, _ = self._robot.find_bodies(".*foot")
+        self._hip_ids_jt, _ = self._robot.find_joints(".*hip.*")
+
+    def _configure_actuator_gains(self):
+        for _, actuator in self._robot.actuators.items():
+            actuator.stiffness[:] = (torch.rand_like(actuator.stiffness) * 0.2 + 0.9) * 35.0
+            actuator.damping[:] = (torch.rand_like(actuator.damping) * 0.2 + 0.9) * 0.5
 
     def _setup_scene(self):
         if self.cfg.use_dynamic_obstacle:
@@ -349,22 +346,7 @@ class Go2FilterEnv(DirectRLEnv):
         self._prev_loco_actions.append(self._loco_actions.clone())
         self._prev_loco_actions.pop(0)
 
-        loco_obs = torch.cat(
-            [
-                self._robot.data.root_com_ang_vel_b * 0.25,  # 3
-                self._robot.data.projected_gravity_b,  # 3
-                torch.zeros(self.num_envs, 3, device=self.device),  # 3 (commands)
-                self._robot.data.joint_pos - self._robot.data.default_joint_pos,  # 12
-                self._robot.data.joint_vel * 0.05,  # 12
-                self._loco_actions,  # 12
-            ],
-            dim=-1,
-        )
-        a = 6
-        b = a + self.cfg.num_high_actions
-        loco_cmd_scale = torch.tensor([[2.0, 2.0, 0.25]], device=self.device)
-        loco_obs[:, a:b] = self._high_actions.clamp(min=-self._cmd_limits, max=self._cmd_limits) * loco_cmd_scale
-        self._loco_actions = self._loco_policy(loco_obs)
+        self._compute_loco_actions()
 
         self._cmd_resample_accums += self.step_dt
         self.randomly_sample_commands(
@@ -397,6 +379,24 @@ class Go2FilterEnv(DirectRLEnv):
             vel_dir /= torch.norm(vel_dir, dim=-1, keepdim=True) + 1e-6
             root_state[:, :2] += vel_dir * self._obst_speed[:, i, :] * self.step_dt
             obst.write_root_state_to_sim(root_state)
+
+    def _compute_loco_actions(self):
+        loco_obs = torch.cat(
+            [
+                self._robot.data.root_com_ang_vel_b * 0.25,  # 3
+                self._robot.data.projected_gravity_b,  # 3
+                torch.zeros(self.num_envs, 3, device=self.device),  # 3 (commands)
+                self._robot.data.joint_pos - self._robot.data.default_joint_pos,  # 12
+                self._robot.data.joint_vel * 0.05,  # 12
+                self._loco_actions,  # 12
+            ],
+            dim=-1,
+        )
+        a = 6
+        b = a + self.cfg.num_high_actions
+        loco_cmd_scale = torch.tensor([[2.0, 2.0, 0.25]], device=self.device)
+        loco_obs[:, a:b] = self._high_actions.clamp(min=-self._cmd_limits, max=self._cmd_limits) * loco_cmd_scale
+        self._loco_actions = self._loco_policy(loco_obs)
 
     def _apply_action(self):
         actions = self._loco_actions * 0.8 + self._prev_loco_actions[-1] * 0.2
@@ -643,14 +643,9 @@ class Go2FilterEnv(DirectRLEnv):
 
             obj.write_root_state_to_sim(root_state_obj, env_ids)
 
-        default_joint_pos = self._robot.data.default_joint_pos[env_ids].clone()
-        default_joint_pos *= math_utils.sample_uniform(0.6, 1.4, default_joint_pos.shape, default_joint_pos.device)
-        joint_pos_limits = self._robot.data.soft_joint_pos_limits[env_ids]
-        joint_pos = default_joint_pos.clamp_(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
-        self._robot.write_joint_state_to_sim(joint_pos, self._robot.data.default_joint_vel[env_ids], env_ids=env_ids)
+        self._reset_joint_state(env_ids)
 
-        self._loco_policy.hidden_state[:, env_mask, :] = 0.0
-        self._loco_policy.cell_state[:, env_mask, :] = 0.0
+        self._reset_loco_policy(env_ids, env_mask)
 
         extras = dict()
         for key in self._episode_sums.keys():
@@ -665,6 +660,19 @@ class Go2FilterEnv(DirectRLEnv):
         extras["Episode/mean_active_obstacles"] = torch.mean(self._num_active_obstacles.to(torch.float))
         extras["Episode/mean_max_episode_length"] = torch.mean(self._max_episode_len_sec)
         self.extras["log"] = extras
+
+    def _reset_loco_policy(self, env_ids: torch.Tensor, env_mask: torch.Tensor):
+        self._loco_policy.hidden_state[:, env_mask, :] = 0.0
+        self._loco_policy.cell_state[:, env_mask, :] = 0.0
+
+    def _reset_joint_state(self, env_ids: torch.Tensor):
+        default_joint_pos = self._robot.data.default_joint_pos[env_ids].clone()
+        default_joint_pos *= math_utils.sample_uniform(0.6, 1.4, default_joint_pos.shape, default_joint_pos.device)
+        joint_pos_limits = self._robot.data.soft_joint_pos_limits[env_ids]
+        joint_pos = default_joint_pos.clamp_(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
+        self._robot.write_joint_state_to_sim(
+            joint_pos, self._robot.data.default_joint_vel[env_ids], env_ids=env_ids
+        )
 
     def _reset_robot_and_cmd(self, env_ids: torch.Tensor):
         env_ids = env_ids.flatten()

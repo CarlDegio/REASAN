@@ -16,6 +16,8 @@ parser.add_argument(
 )
 parser.add_argument("--random_actions", action="store_true", help="Randomize the filter command every step.")
 parser.add_argument("--onnx_reference", type=str, default="", help="Optional ONNX used only for PT parity checks.")
+parser.add_argument("--with_dyn_obst", action="store_true")
+parser.add_argument("--num_ray_centers", choices=("1x", "3x", "5x", "11x"), default="1x")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 apply_default_reasan_kit_args(args_cli, __file__)
@@ -34,12 +36,25 @@ def main():
     cfg = parse_env_cfg("Unitree-G1-Filter", device=args_cli.device, num_envs=args_cli.num_envs)
     cfg.seed = args_cli.seed
     cfg.loco_checkpoint = args_cli.loco_checkpoint
+    cfg.wait_for_key = False
+    cfg.is_play_env = True
+    cfg.use_dynamic_obstacle = args_cli.with_dyn_obst
+    cfg.set_raycaster_measure_pattern(args_cli.num_ray_centers)
     env = gym.make("Unitree-G1-Filter", cfg=cfg)
     env.reset()
     print(f"[VALIDATE] Runtime joint names ({len(env.unwrapped._robot.joint_names)}):")
     for index, name in enumerate(env.unwrapped._robot.joint_names):
         print(f"[VALIDATE]   action[{index:02d}] -> {name}")
     print(f"[VALIDATE] Default joint positions: {env.unwrapped._robot.data.default_joint_pos[0].tolist()}")
+    print(f"[VALIDATE] Joint stiffness: {env.unwrapped._robot.data.joint_stiffness[0].tolist()}")
+    print(f"[VALIDATE] Joint damping: {env.unwrapped._robot.data.joint_damping[0].tolist()}")
+    materials = env.unwrapped._robot.root_physx_view.get_material_properties()[0]
+    print(
+        "[VALIDATE] Robot material ranges: "
+        f"static=({materials[:, 0].min().item():.6g},{materials[:, 0].max().item():.6g}), "
+        f"dynamic=({materials[:, 1].min().item():.6g},{materials[:, 1].max().item():.6g}), "
+        f"restitution=({materials[:, 2].min().item():.6g},{materials[:, 2].max().item():.6g})"
+    )
 
     onnx_session = None
     onnx_input_name = None
@@ -61,14 +76,13 @@ def main():
     upper = torch.tensor(cfg.command_upper, device=env.unwrapped.device)
     if torch.any(command < lower) or torch.any(command > upper):
         raise ValueError(f"Command {tuple(args_cli.command)} is outside [{cfg.command_lower}, {cfg.command_upper}]")
-    normalized_action = 2.0 * (command - lower) / (upper - lower) - 1.0
-    normalized_action = normalized_action.unsqueeze(0).repeat(args_cli.num_envs, 1)
+    normalized_action = command.unsqueeze(0).repeat(args_cli.num_envs, 1)
     print(f"[INFO] Play command: vx={command[0].item()}, vy={command[1].item()}, yaw={command[2].item()}")
     step = 0
     while simulation_app.is_running() and (args_cli.steps == 0 or step < args_cli.steps):
         with torch.inference_mode():
             actions = (
-                2.0 * torch.rand(args_cli.num_envs, 3, device=env.unwrapped.device) - 1.0
+                lower + torch.rand(args_cli.num_envs, 3, device=env.unwrapped.device) * (upper - lower)
                 if args_cli.random_actions
                 else normalized_action
             )

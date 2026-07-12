@@ -1,10 +1,12 @@
-"""Training entry-point placeholder for the G1 filter migration.
+"""Train the migrated Unitree G1 REASEN safety filter."""
 
-The environment skeleton intentionally has no reward and no locomotion adapter,
-so this script refuses to start optimization until those stages are implemented.
-"""
+import sys
 
-raise SystemExit(
-    "G1 Filter training is intentionally disabled after migration step one. "
-    "Use scripts/play_g1_filter.py to review the environment skeleton."
-)
+if "--task" not in sys.argv:
+    sys.argv.extend(("--task", "Unitree-G1-Filter"))
+
+from train_filter import main
+
+
+if __name__ == "__main__":
+    main()
