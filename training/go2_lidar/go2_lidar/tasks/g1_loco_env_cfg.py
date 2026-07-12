@@ -122,9 +122,9 @@ UNITREE_G1_29DOF_CFG = ArticulationCfg(
             velocity_limit_sim=37,
             stiffness=40.0,
             damping={
-                ".*_shoulder_.*": 1.0,
-                ".*_elbow_.*": 1.0,
-                ".*_wrist_roll.*": 1.0,
+                ".*_shoulder_.*": 10.0,
+                ".*_elbow_.*": 10.0,
+                ".*_wrist_roll.*": 10.0,
                 ".*_ankle_.*": 2.0,
                 "waist_.*_joint": 5.0,
             },
@@ -135,7 +135,7 @@ UNITREE_G1_29DOF_CFG = ArticulationCfg(
             effort_limit_sim=5,
             velocity_limit_sim=22,
             stiffness=40.0,
-            damping=1.0,
+            damping=10.0,
             armature=0.01,
         ),
     },
@@ -213,7 +213,7 @@ class G1LocoEnvCfg(DirectRLEnvCfg):
             dynamic_friction=1.0,
             restitution=0.0,
         ),
-        physx=PhysxCfg(gpu_max_rigid_patch_count=4096 * 4096),
+        physx=PhysxCfg(gpu_max_rigid_patch_count=10 * 2**15),
     )
 
     viewer: ViewerCfg = ViewerCfg(resolution=(1920, 1080))

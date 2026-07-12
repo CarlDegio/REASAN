@@ -18,6 +18,7 @@ from isaaclab.sensors import ContactSensor
 from isaaclab.terrains import TerrainImporter
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
+from go2_lidar.policies import UnitreeG1LocoAdapter
 from go2_lidar.tasks.g1_filter_env_cfg import G1FilterEnvCfg
 
 
@@ -25,6 +26,15 @@ class G1FilterEnv(DirectRLEnv):
     """G1 simulation shell exposing a normalized three-dimensional filter action."""
 
     cfg: G1FilterEnvCfg
+    _OBS_HISTORY_LENGTH = 5
+    _OBS_TERM_ORDER = (
+        "base_ang_vel",
+        "projected_gravity",
+        "velocity_commands",
+        "joint_pos_rel",
+        "joint_vel_rel",
+        "last_action",
+    )
 
     def __init__(self, cfg: G1FilterEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
@@ -33,6 +43,14 @@ class G1FilterEnv(DirectRLEnv):
         self._safe_commands = torch.zeros_like(self._filter_actions)
         self._command_lower = torch.tensor(self.cfg.command_lower, device=self.device)
         self._command_upper = torch.tensor(self.cfg.command_upper, device=self.device)
+
+        self._loco_policy = None
+        self._loco_actions = torch.zeros(self.num_envs, 29, device=self.device)
+        self._loco_obs_history = None
+        if self.cfg.loco_checkpoint:
+            self._loco_policy = UnitreeG1LocoAdapter(self.cfg.loco_checkpoint, self.device)
+            print(f"[INFO] Loaded frozen Unitree G1 loco actor: {self._loco_policy.checkpoint}")
+            print(f"[INFO] Loco batch interface: [N, 480] -> [N, 29], N={self.num_envs}")
 
         self._base_ids, _ = self._contact_sensor.find_bodies("torso_link")
         self._feet_ids, _ = self._contact_sensor.find_bodies(".*_ankle_roll_link")
@@ -58,10 +76,11 @@ class G1FilterEnv(DirectRLEnv):
         self.scene.clone_environments(copy_from_source=False)
         self.scene.filter_collisions(global_prim_paths=[self.cfg.terrain.prim_path])
 
-        sim_utils.DomeLightCfg(
+        sky_light_cfg = sim_utils.DomeLightCfg(
             intensity=2000.0,
             texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
-        ).func("/World/skyLight")
+        )
+        sky_light_cfg.func("/World/skyLight", sky_light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor):
         if actions.shape != self._filter_actions.shape:
@@ -71,11 +90,47 @@ class G1FilterEnv(DirectRLEnv):
         self._safe_commands.copy_(
             self._command_lower + 0.5 * (normalized + 1.0) * (self._command_upper - self._command_lower)
         )
+        if self._loco_policy is not None:
+            terms = self._build_loco_obs_terms()
+            self._append_loco_history(terms)
+            history_obs = self._flatten_loco_history()
+            self._loco_actions.copy_(self._loco_policy(history_obs))
 
     def _apply_action(self):
-        # Step one intentionally has no locomotion adapter. Holding the nominal
-        # pose exercises G1 physics and resets without inventing a control policy.
-        self._robot.set_joint_position_target(self._robot.data.default_joint_pos)
+        targets = self._robot.data.default_joint_pos.clone()
+        if self._loco_policy is not None:
+            targets += self._loco_actions * self.cfg.loco_action_scale
+        self._robot.set_joint_position_target(targets)
+
+    def _build_loco_obs_terms(self) -> dict[str, torch.Tensor]:
+        return {
+            "base_ang_vel": self._robot.data.root_ang_vel_b * 0.2,
+            "projected_gravity": self._robot.data.projected_gravity_b,
+            "velocity_commands": self._safe_commands,
+            "joint_pos_rel": self._robot.data.joint_pos - self._robot.data.default_joint_pos,
+            "joint_vel_rel": self._robot.data.joint_vel * 0.05,
+            "last_action": self._loco_actions,
+        }
+
+    def _append_loco_history(self, terms: dict[str, torch.Tensor]):
+        if self._loco_obs_history is None:
+            self._loco_obs_history = {
+                name: value.unsqueeze(1).repeat(1, self._OBS_HISTORY_LENGTH, 1)
+                for name, value in terms.items()
+            }
+            return
+        for name, value in terms.items():
+            self._loco_obs_history[name] = torch.cat(
+                (self._loco_obs_history[name][:, 1:], value.unsqueeze(1)), dim=1
+            )
+
+    def _flatten_loco_history(self) -> torch.Tensor:
+        observations = torch.cat(
+            [self._loco_obs_history[name].flatten(start_dim=1) for name in self._OBS_TERM_ORDER], dim=-1
+        )
+        if observations.shape != (self.num_envs, UnitreeG1LocoAdapter.observation_dim):
+            raise RuntimeError(f"Invalid Unitree observation shape: {tuple(observations.shape)}")
+        return observations
 
     def _get_observations(self) -> dict:
         obs = torch.cat(
@@ -95,14 +150,9 @@ class G1FilterEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        contact_history = self._contact_sensor.data.net_forces_w_history
-        torso_contact = torch.any(
-            torch.max(torch.norm(contact_history[:, :, self._base_ids], dim=-1), dim=1)[0] > 1.0,
-            dim=1,
-        )
-        tipped = -self._robot.data.projected_gravity_b[:, 2] < 0.25
-        too_low = self._robot.data.root_pos_w[:, 2] < 0.3
-        return torso_contact | tipped | too_low, time_out
+        tipped = -self._robot.data.projected_gravity_b[:, 2] < math.cos(0.8)
+        too_low = self._robot.data.root_pos_w[:, 2] < 0.2
+        return tipped | too_low, time_out
 
     def _reset_idx(self, env_ids):
         if env_ids is None:
@@ -112,6 +162,7 @@ class G1FilterEnv(DirectRLEnv):
 
         self._filter_actions[env_ids] = 0.0
         self._safe_commands[env_ids] = 0.0
+        self._loco_actions[env_ids] = 0.0
 
         root_state = self._robot.data.default_root_state[env_ids].clone()
         root_state[:, :3] += self._terrain.env_origins[env_ids]
@@ -126,7 +177,12 @@ class G1FilterEnv(DirectRLEnv):
         joint_pos = self._robot.data.default_joint_pos[env_ids].clone()
         joint_limits = self._robot.data.soft_joint_pos_limits[env_ids]
         joint_pos.clamp_(joint_limits[..., 0], joint_limits[..., 1])
-        self._robot.write_joint_state_to_sim(
-            joint_pos, self._robot.data.default_joint_vel[env_ids], env_ids=env_ids
-        )
+        joint_vel = torch.empty_like(self._robot.data.default_joint_vel[env_ids]).uniform_(-1.0, 1.0)
+        self._robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
+        if self._loco_policy is not None and self._loco_obs_history is not None:
+            terms = self._build_loco_obs_terms()
+            for name, value in terms.items():
+                self._loco_obs_history[name][env_ids] = value[env_ids].unsqueeze(1).repeat(
+                    1, self._OBS_HISTORY_LENGTH, 1
+                )
