@@ -19,7 +19,7 @@ class G1LocoPPOCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "g1_loco"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
-        class_name="ActorCriticRecurrent",
+        class_name="ActorCritic",
         init_noise_std=1.0,
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],

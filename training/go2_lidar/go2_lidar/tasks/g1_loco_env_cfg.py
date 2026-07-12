@@ -17,11 +17,29 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.sim import PhysxCfg, SimulationCfg
+import isaaclab.terrains as terrain_gen
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
 from go2_lidar.tasks.go2_loco_env_cfg import randomize_rigid_body_com
-from go2_lidar.terrain.train_terrain_cfg import GO2_LOCO_TERRAIN_CFG
+
+
+# Match Unitree RL Lab 21's G1 locomotion terrain: the generator contains only
+# a mesh plane, so every curriculum level and column is geometrically flat.
+G1_LOCO_FLAT_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
+    size=(8.0, 8.0),
+    border_width=20.0,
+    num_rows=9,
+    num_cols=21,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    difficulty_range=(0.0, 1.0),
+    use_cache=False,
+    sub_terrains={
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.5),
+    },
+)
 
 
 UNITREE_MODEL_DIR = Path(__file__).resolve().parents[3] / "assets" / "unitree_model"
@@ -201,10 +219,10 @@ class G1LocoEnvCfg(DirectRLEnvCfg):
     viewer: ViewerCfg = ViewerCfg(resolution=(1920, 1080))
 
     num_actions = 29
-    observation_space = 96
-    state_space = 0
+    observation_space = 480
+    state_space = 495
     action_space = 29
-    action_scale = 0.5
+    action_scale = 0.25
     is_play_env = False
     is_second_stage = False
 
@@ -217,15 +235,15 @@ class G1LocoEnvCfg(DirectRLEnvCfg):
     scene = InteractiveSceneCfg(num_envs=4096, env_spacing=10, replicate_physics=False)
     events: G1EventCfg = G1EventCfg()
 
-    static_friction_range = (0.2, 1.25)
-    dynamic_friction_range = (0.2, 1.25)
-    restitution_range = (0.0, 1.0)
+    static_friction_range = (0.3, 1.0)
+    dynamic_friction_range = (0.3, 1.0)
+    restitution_range = (0.0, 0.0)
 
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
-        terrain_generator=GO2_LOCO_TERRAIN_CFG,
-        max_init_terrain_level=0,
+        terrain_generator=G1_LOCO_FLAT_TERRAIN_CFG,
+        max_init_terrain_level=G1_LOCO_FLAT_TERRAIN_CFG.num_rows - 1,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",

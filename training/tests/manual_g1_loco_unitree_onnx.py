@@ -78,7 +78,12 @@ parser = argparse.ArgumentParser(description="Run REASAN G1 locomotion with Unit
 parser.add_argument("--checkpoint", type=Path, default=UNITREE_G1_VELOCITY_ONNX, help="Unitree G1 velocity ONNX path.")
 parser.add_argument("--deploy_cfg", type=Path, default=UNITREE_G1_VELOCITY_DEPLOY_CFG, help="Unitree deploy.yaml path.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to spawn.")
-parser.add_argument("--steps", type=int, default=2000, help="Number of env steps to run before exiting.")
+parser.add_argument(
+    "--steps",
+    type=int,
+    default=0,
+    help="Number of env steps to run before exiting; use 0 or a negative value to run until the window closes.",
+)
 parser.add_argument("--seed", type=int, default=0, help="Random seed for env.")
 parser.add_argument("--onnx_intra_op_threads", type=int, default=1, help="ONNXRuntime intra-op thread count.")
 parser.add_argument("--onnx_inter_op_threads", type=int, default=1, help="ONNXRuntime inter-op thread count.")
@@ -212,6 +217,36 @@ def _apply_unitree_deploy_action_scale(env, deploy_cfg: dict):
     print(f"[INFO] Applied Unitree deploy action scale to REASAN env: {first_scale}")
 
 
+def _apply_unitree_deploy_env_cfg(env_cfg, deploy_cfg: dict):
+    """Apply the command and contact ranges used by the exported Unitree policy."""
+    ranges = deploy_cfg["commands"]["base_velocity"]["ranges"]
+    env_cfg.cmd_lin_vel_x_range = tuple(float(value) for value in ranges["lin_vel_x"])
+    env_cfg.cmd_lin_vel_y_range = tuple(float(value) for value in ranges["lin_vel_y"])
+    env_cfg.cmd_ang_vel_z_range = tuple(float(value) for value in ranges["ang_vel_z"])
+    env_cfg.cmd_resample_interval = (10.0, 10.0)
+
+    env_cfg.static_friction_range = (0.3, 1.0)
+    env_cfg.dynamic_friction_range = (0.3, 1.0)
+    env_cfg.restitution_range = (0.0, 0.0)
+
+    action_scale = deploy_cfg["actions"]["JointPositionAction"]["scale"]
+    first_scale = float(action_scale[0])
+    if any(abs(float(scale) - first_scale) > 1e-6 for scale in action_scale):
+        raise RuntimeError("This script expects Unitree deploy.yaml to use a uniform action scale.")
+    env_cfg.action_scale = first_scale
+
+    print(
+        "[INFO] Applied Unitree command ranges: "
+        f"vx={env_cfg.cmd_lin_vel_x_range}, vy={env_cfg.cmd_lin_vel_y_range}, "
+        f"yaw={env_cfg.cmd_ang_vel_z_range}, resample={env_cfg.cmd_resample_interval}s"
+    )
+    print(
+        "[INFO] Applied Unitree material ranges: "
+        f"static={env_cfg.static_friction_range}, dynamic={env_cfg.dynamic_friction_range}, "
+        f"restitution={env_cfg.restitution_range}"
+    )
+
+
 def _build_unitree_obs_terms(env) -> dict[str, torch.Tensor]:
     unwrapped = env.unwrapped
     controlled_joint_ids = unwrapped._controlled_joint_ids
@@ -280,6 +315,8 @@ def main():
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.seed = args_cli.seed
     env_cfg.is_play_env = True
+    deploy_cfg = _load_deploy_cfg(args_cli.deploy_cfg, int(env_cfg.action_space))
+    _apply_unitree_deploy_env_cfg(env_cfg, deploy_cfg)
     if args_cli.second_stage:
         env_cfg.set_second_stage()
 
@@ -287,7 +324,8 @@ def main():
     env.reset()
 
     action_dim = gym.spaces.flatdim(env.unwrapped.single_action_space)
-    deploy_cfg = _load_deploy_cfg(args_cli.deploy_cfg, action_dim)
+    if action_dim != int(env_cfg.action_space):
+        raise RuntimeError(f"Environment action dim changed from {env_cfg.action_space} to {action_dim}.")
     _apply_unitree_deploy_action_scale(env, deploy_cfg)
     onnx_metadata = _read_onnx_metadata(args_cli.checkpoint)
     session, onnx_input_name, onnx_output_name = _load_onnxruntime_session(
@@ -309,7 +347,7 @@ def main():
 
     step = 0
     with torch.inference_mode():
-        while simulation_app.is_running() and step < args_cli.steps:
+        while simulation_app.is_running() and (args_cli.steps <= 0 or step < args_cli.steps):
             onnx_input = history_obs.detach().cpu().numpy().astype("float32")
             onnx_actions = session.run([onnx_output_name], {onnx_input_name: onnx_input})[0]
             if onnx_actions.shape[-1] != action_dim:

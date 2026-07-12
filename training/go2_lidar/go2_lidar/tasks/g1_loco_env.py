@@ -25,6 +25,25 @@ from go2_lidar.tasks.g1_loco_env_cfg import G1LocoEnvCfg
 class G1LocoEnv(DirectRLEnv):
     cfg: G1LocoEnvCfg
 
+    _OBS_HISTORY_LENGTH = 5
+    _POLICY_OBS_TERM_ORDER = (
+        "base_ang_vel",
+        "projected_gravity",
+        "velocity_commands",
+        "joint_pos_rel",
+        "joint_vel_rel",
+        "last_action",
+    )
+    _CRITIC_OBS_TERM_ORDER = (
+        "base_lin_vel",
+        "base_ang_vel",
+        "projected_gravity",
+        "velocity_commands",
+        "joint_pos_rel",
+        "joint_vel_rel",
+        "last_action",
+    )
+
     def __init__(self, cfg: G1LocoEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -100,6 +119,11 @@ class G1LocoEnv(DirectRLEnv):
         )
         self._reset_commands()
 
+        # Match Unitree RL Lab's ObservationManager history layout: each
+        # observation term stores five frames, then terms are concatenated.
+        self._policy_obs_history = None
+        self._critic_obs_history = None
+
         self._show_debug_viz = False
         if self.cfg.is_play_env:
             print("\n********************************************")
@@ -130,13 +154,11 @@ class G1LocoEnv(DirectRLEnv):
         self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
         self.scene.sensors["contact_sensor"] = self._contact_sensor
 
-        self.num_terrain_rows = 10
-        self.num_terrain_cols = 20
+        self.num_terrain_rows = self.cfg.terrain.terrain_generator.num_rows
+        self.num_terrain_cols = self.cfg.terrain.terrain_generator.num_cols
 
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
-        self.cfg.terrain.terrain_generator.num_rows = self.num_terrain_rows
-        self.cfg.terrain.terrain_generator.num_cols = self.num_terrain_cols
         self._terrain: TerrainImporter = self.cfg.terrain.class_type(self.cfg.terrain)
 
         rand_cols = torch.randint(0, self.num_terrain_cols, size=(self.num_envs,), device=self.device)
@@ -180,49 +202,80 @@ class G1LocoEnv(DirectRLEnv):
         self._robot.set_joint_position_target(joint_pos_target)
 
     def _get_observations(self) -> dict:
-        contact_indicators = torch.norm(self._contact_sensor.data.net_forces_w[:, self._feet_ids_cs, :], dim=-1) > 1.0
-        contact_indicators = contact_indicators.float()
+        policy_terms = self._build_policy_obs_terms(add_noise=True)
+        critic_terms = self._build_critic_obs_terms()
+        self._policy_obs_history = self._append_obs_history(self._policy_obs_history, policy_terms)
+        self._critic_obs_history = self._append_obs_history(self._critic_obs_history, critic_terms)
 
-        obs_buf = torch.cat(
-            [
-                self._robot.data.root_ang_vel_b * 0.25,
-                self._robot.data.projected_gravity_b,
-                self._cmd_lin_vel * 2.0,
-                self._cmd_ang_vel * 0.25,
-                self._robot.data.joint_pos[:, self._controlled_joint_ids]
-                - self._robot.data.default_joint_pos[:, self._controlled_joint_ids],
-                self._robot.data.joint_vel[:, self._controlled_joint_ids] * 0.05,
-                self._actions,
-            ],
-            dim=-1,
-        )
-
-        critic_obs_buf = torch.cat(
-            [
-                obs_buf,
-                self._robot.data.root_lin_vel_b * 2.0,
-                contact_indicators,
-                self._robot.data.applied_torque[:, self._controlled_joint_ids],
-                self._robot.data.body_lin_vel_w[:, self._feet_ids_bd, :].reshape(self.num_envs, -1),
-                self._robot.data.body_pos_w[:, self._feet_ids_bd, :].reshape(self.num_envs, -1),
-            ],
-            dim=-1,
-        )
-
-        noise_buf = torch.cat(
-            [
-                torch.ones(3) * 0.2,
-                torch.ones(3) * 0.05,
-                torch.zeros(3),
-                torch.ones(self._num_actions) * 0.01,
-                torch.ones(self._num_actions) * 1.5 * 0.5,
-                torch.zeros(self._num_actions),
-            ],
-            dim=0,
-        )
-        obs_buf += (torch.rand_like(obs_buf) * 2.0 - 1.0) * noise_buf.to(self.device)
-
+        obs_buf = self._flatten_obs_history(self._policy_obs_history, self._POLICY_OBS_TERM_ORDER)
+        critic_obs_buf = self._flatten_obs_history(self._critic_obs_history, self._CRITIC_OBS_TERM_ORDER)
         return {"policy": obs_buf, "critic": critic_obs_buf}
+
+    def _build_policy_obs_terms(self, add_noise: bool) -> dict[str, torch.Tensor]:
+        base_ang_vel = self._robot.data.root_ang_vel_b
+        projected_gravity = self._robot.data.projected_gravity_b
+        joint_pos_rel = (
+            self._robot.data.joint_pos[:, self._controlled_joint_ids]
+            - self._robot.data.default_joint_pos[:, self._controlled_joint_ids]
+        )
+        joint_vel_rel = self._robot.data.joint_vel[:, self._controlled_joint_ids]
+
+        if add_noise:
+            base_ang_vel = base_ang_vel + (torch.rand_like(base_ang_vel) * 2.0 - 1.0) * 0.2
+            projected_gravity = projected_gravity + (torch.rand_like(projected_gravity) * 2.0 - 1.0) * 0.05
+            joint_pos_rel = joint_pos_rel + (torch.rand_like(joint_pos_rel) * 2.0 - 1.0) * 0.01
+            joint_vel_rel = joint_vel_rel + (torch.rand_like(joint_vel_rel) * 2.0 - 1.0) * 1.5
+
+        return {
+            "base_ang_vel": base_ang_vel * 0.2,
+            "projected_gravity": projected_gravity,
+            "velocity_commands": torch.cat([self._cmd_lin_vel, self._cmd_ang_vel], dim=-1),
+            "joint_pos_rel": joint_pos_rel,
+            "joint_vel_rel": joint_vel_rel * 0.05,
+            "last_action": self._actions,
+        }
+
+    def _build_critic_obs_terms(self) -> dict[str, torch.Tensor]:
+        return {
+            "base_lin_vel": self._robot.data.root_lin_vel_b,
+            "base_ang_vel": self._robot.data.root_ang_vel_b * 0.2,
+            "projected_gravity": self._robot.data.projected_gravity_b,
+            "velocity_commands": torch.cat([self._cmd_lin_vel, self._cmd_ang_vel], dim=-1),
+            "joint_pos_rel": (
+                self._robot.data.joint_pos[:, self._controlled_joint_ids]
+                - self._robot.data.default_joint_pos[:, self._controlled_joint_ids]
+            ),
+            "joint_vel_rel": self._robot.data.joint_vel[:, self._controlled_joint_ids] * 0.05,
+            "last_action": self._actions,
+        }
+
+    def _append_obs_history(self, history, terms: dict[str, torch.Tensor]):
+        if history is None:
+            return {
+                name: value.unsqueeze(1).repeat(1, self._OBS_HISTORY_LENGTH, 1)
+                for name, value in terms.items()
+            }
+        for name, value in terms.items():
+            history[name] = torch.cat([history[name][:, 1:], value.unsqueeze(1)], dim=1)
+        return history
+
+    @staticmethod
+    def _flatten_obs_history(history, term_order: tuple[str, ...]) -> torch.Tensor:
+        return torch.cat([history[name].flatten(start_dim=1) for name in term_order], dim=-1)
+
+    def _reset_obs_history(self, env_ids):
+        if self._policy_obs_history is None or self._critic_obs_history is None:
+            return
+        policy_terms = self._build_policy_obs_terms(add_noise=True)
+        critic_terms = self._build_critic_obs_terms()
+        for name, value in policy_terms.items():
+            self._policy_obs_history[name][env_ids] = value[env_ids].unsqueeze(1).repeat(
+                1, self._OBS_HISTORY_LENGTH, 1
+            )
+        for name, value in critic_terms.items():
+            self._critic_obs_history[name][env_ids] = value[env_ids].unsqueeze(1).repeat(
+                1, self._OBS_HISTORY_LENGTH, 1
+            )
 
     def _get_rewards(self) -> torch.Tensor:
         cmd = torch.cat([self._cmd_lin_vel, self._cmd_ang_vel], dim=-1)
@@ -398,6 +451,7 @@ class G1LocoEnv(DirectRLEnv):
         self._robot.write_joint_state_to_sim(joint_pos, self._robot.data.default_joint_vel[env_ids], env_ids=env_ids)
 
         self._reset_commands(env_mask)
+        self._reset_obs_history(env_ids)
 
         extras = dict()
         for key in self._episode_sums.keys():

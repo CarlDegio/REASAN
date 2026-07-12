@@ -123,8 +123,10 @@ class OnPolicyRunnerLoco:
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
 
-        # log into wandb
-        wandb.login()
+        # Playback constructs the runner without a W&B project. Only require
+        # authentication for training runs that actually enable W&B logging.
+        if self.wandb_project is not None:
+            wandb.login()
 
     def learn(self, num_learning_iterations: int):  # noqa: C901
         # initialize wandb run

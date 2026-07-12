@@ -21,7 +21,16 @@ def test_g1_loco_files_and_registration_are_present():
     assert "UNITREE_G1_29DOF_CFG" in env_cfg
     assert "G1/29dof/usd/g1_29dof_rev_1_0/g1_29dof_rev_1_0.usd" in env_cfg
     assert "action_space = 29" in env_cfg
+    assert "observation_space = 480" in env_cfg
+    assert "state_space = 495" in env_cfg
+    assert "G1_LOCO_FLAT_TERRAIN_CFG" in env_cfg
+    assert '"flat": terrain_gen.MeshPlaneTerrainCfg' in env_cfg
+    assert "GO2_LOCO_TERRAIN_CFG" not in env_cfg
+    assert "num_rows=9" in env_cfg
+    assert "num_cols=21" in env_cfg
     assert "class G1LocoEnv" in env
+    assert "_OBS_HISTORY_LENGTH = 5" in env
+    assert 'class_name="ActorCritic"' in (tasks_dir / "g1_loco_ppo_cfg.py").read_text()
     assert "r_track_lin_vel_xy" in env
     assert "r_feet_gait" in env
     assert "r_joint_deviation_fingers" not in env
