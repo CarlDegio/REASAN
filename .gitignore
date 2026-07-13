@@ -7,6 +7,9 @@
 # Omniverse
 **/*.dmp
 **/.thumbs
+training/assets/omniverse/
+training/assets/unitree_model/
+training/assets/unitree_rl_lab/
 
 # No USD files allowed in the repo
 **/*.usd
