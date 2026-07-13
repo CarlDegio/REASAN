@@ -30,10 +30,6 @@ class G1FilterEnv(Go2FilterEnv):
         if not cfg.loco_checkpoint:
             raise ValueError("G1 Filter requires cfg.loco_checkpoint pointing to a Unitree model_*.pt")
         super().__init__(cfg, render_mode, **kwargs)
-        self._command_lower = torch.tensor((-0.5, -0.3, -0.2), device=self.device)
-        self._command_upper = torch.tensor((1.0, 0.3, 0.2), device=self.device)
-        self._cmd_range = torch.tensor([[1.0, 0.3, 0.2]], device=self.device)
-        self._cmd_limits = self._cmd_range.clone()
 
     def _initialize_loco_policy(self):
         self._loco_policy = UnitreeG1LocoAdapter(self.cfg.loco_checkpoint, self.device)

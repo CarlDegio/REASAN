@@ -112,6 +112,19 @@ class Go2FilterEnvCfg(DirectRLEnvCfg):
     action_scale_loco = 0.25
     is_play_env = False
     high_action_ema_alpha = 0.0
+    action_rate_reward_weight = -0.01
+    action_smoothness_reward_weight = -0.01
+
+    # Per-mode absolute sampling magnitudes for (vx, vy, wz).  Keeping these
+    # in the environment configuration lets each robot use the same command
+    # generator without inheriting Go2-specific velocity ranges.
+    random_command_ranges = (
+        (1.5, 1.2, 3.0),
+        (2.5, 0.5, 0.5),
+        (0.5, 2.0, 0.5),
+    )
+    command_lower = (-2.5, -1.5, -3.0)
+    command_upper = (2.5, 1.5, 3.0)
 
     data_collection_type = "none"
     use_predicted_rays = False

@@ -85,8 +85,21 @@ class G1FilterEnvCfg(Go2FilterEnvCfg):
     num_loco_actions = 29
     action_scale_loco = 0.25
     loco_checkpoint = ""
-    command_lower = (-0.5, -0.3, -0.2)
-    command_upper = (1.0, 0.3, 0.2)
+    # Safe command envelope accepted by the frozen G1 loco actor.  Keep
+    # lateral motion deliberately narrow and allow the newly-trained loco
+    # policy to use its full yaw-command range.
+    command_lower = (-0.5, -0.15, -1.0)
+    command_upper = (1.0, 0.15, 1.0)
+    random_command_ranges = (
+        (1.5, 0.15, 1.0),
+        (2.5, 0.15, 1.0),
+        (0.5, 0.15, 1.0),
+    )
+
+    # Penalize first-order Filter action changes more strongly.  The
+    # second-order smoothness term remains at the original REASEN weight.
+    action_rate_reward_weight = -0.05
+    action_smoothness_reward_weight = -0.01
 
     scene = InteractiveSceneCfg(num_envs=1024, env_spacing=10.0, replicate_physics=False)
     events: G1FilterEventCfg = G1FilterEventCfg()

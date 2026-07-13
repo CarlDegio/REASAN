@@ -113,10 +113,11 @@ class Go2FilterEnv(DirectRLEnv):
         self._step_counter = 0
 
         self._cmd_buffer = torch.zeros(self.num_envs, 3, device=self.device)
-        self._cmd_range = torch.tensor([[2.5, 1.5, 3.0]], device=self.device)
+        self._command_lower = torch.tensor(self.cfg.command_lower, device=self.device)
+        self._command_upper = torch.tensor(self.cfg.command_upper, device=self.device)
+        self._cmd_limits = torch.maximum(self._command_lower.abs(), self._command_upper.abs()).unsqueeze(0)
+        self._cmd_range = self._cmd_limits.clone()
         self._cmd_zero_out_prob = torch.tensor([[0.2, 0.4, 0.5]], device=self.device)
-
-        self._cmd_limits = torch.tensor([[2.5, 1.5, 3.0]], device=self.device)
 
         self._use_random_cmd = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._use_random_cmd[:] = True
@@ -498,13 +499,13 @@ class Go2FilterEnv(DirectRLEnv):
         r_track_ang_vel *= 3.0
 
         r_action_rate_high = torch.sum(torch.square(self._high_actions - self._prev_high_actions[-1]), dim=1)
-        r_action_rate_high *= -0.01
+        r_action_rate_high *= self.cfg.action_rate_reward_weight
 
         r_action_smoothness_high = torch.sum(
             torch.square(self._high_actions - 2.0 * self._prev_high_actions[-1] + self._prev_high_actions[-2]),
             dim=1,
         )
-        r_action_smoothness_high *= -0.01
+        r_action_smoothness_high *= self.cfg.action_smoothness_reward_weight
 
         r_cmd_limits = (torch.abs(self._high_actions[:, 0]) - self._cmd_limits[0, 0]).clip(min=0.0).square()
         r_cmd_limits += (torch.abs(self._high_actions[:, 1]) - self._cmd_limits[0, 1]).clip(min=0.0).square()
@@ -1077,6 +1078,12 @@ class Go2FilterEnv(DirectRLEnv):
         )
         self._cmd_buffer[env_mask, 2] = heading_error.clip(min=-3.0, max=3.0)
 
+        # Goal-directed commands use the same robot-specific envelope as
+        # randomly sampled commands and the final loco-policy input.
+        self._cmd_buffer[env_mask] = torch.maximum(
+            torch.minimum(self._cmd_buffer[env_mask], self._command_upper), self._command_lower
+        )
+
         dist_to_goal = torch.norm(self._robot_start_pos[:, :2] - self._robot.data.root_pos_w[:, :2], dim=-1)
         zero_mask = (dist_to_goal < 0.5) & env_mask
         self._cmd_buffer[zero_mask, :] = 0.0
@@ -1108,7 +1115,7 @@ class Go2FilterEnv(DirectRLEnv):
         mask_type_0 = env_mask & (rand_float < 0.33)
         num_resets_type_0 = torch.count_nonzero(mask_type_0).item()
         if num_resets_type_0 > 0:
-            cmd_commands = torch.tensor([1.5, 1.2, 3.0], device=self.device)
+            cmd_commands = torch.tensor(self.cfg.random_command_ranges[0], device=self.device)
             cmd_not_zero_out_prob = torch.tensor([0.8, 0.5, 0.5], device=self.device)
             new_commands = math_utils.sample_uniform(
                 -cmd_commands, cmd_commands, (num_resets_type_0, 3), device=self.device
@@ -1129,7 +1136,7 @@ class Go2FilterEnv(DirectRLEnv):
         mask_type_1 = env_mask & ((rand_float >= 0.33) & (rand_float < 0.66))
         num_resets_type_1 = torch.count_nonzero(mask_type_1).item()
         if num_resets_type_1 > 0:
-            cmd_commands = torch.tensor([2.5, 0.5, 0.5], device=self.device)
+            cmd_commands = torch.tensor(self.cfg.random_command_ranges[1], device=self.device)
             cmd_not_zero_out_prob = torch.tensor([0.9, 0.5, 0.5], device=self.device)
             new_commands = math_utils.sample_uniform(
                 -cmd_commands, cmd_commands, (num_resets_type_1, 3), device=self.device
@@ -1150,7 +1157,7 @@ class Go2FilterEnv(DirectRLEnv):
         mask_type_2 = env_mask & (rand_float >= 0.66) & (rand_float < 1.01)
         num_resets_type_2 = torch.count_nonzero(mask_type_2).item()
         if num_resets_type_2 > 0:
-            cmd_commands = torch.tensor([0.5, 2.0, 0.5], device=self.device)
+            cmd_commands = torch.tensor(self.cfg.random_command_ranges[2], device=self.device)
             cmd_not_zero_out_prob = torch.tensor([0.5, 0.9, 0.5], device=self.device)
             new_commands = math_utils.sample_uniform(
                 -cmd_commands, cmd_commands, (num_resets_type_2, 3), device=self.device
