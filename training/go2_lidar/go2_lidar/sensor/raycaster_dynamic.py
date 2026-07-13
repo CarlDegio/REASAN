@@ -314,7 +314,9 @@ class RayCasterDynamic(SensorBase):
             self.ray_directions[env_ids] = quat_apply(
                 offset_quat.repeat(len(env_ids), self.num_rays, 1), self.ray_directions[env_ids]
             )
-            self.ray_starts += offset_pos
+            # sample_rays() refreshes only env_ids. Apply the mount offset to
+            # that same slice so other environments never accumulate it.
+            self.ray_starts[env_ids] += offset_pos
 
         # obtain the poses of the sensors
         if isinstance(self._view, XFormPrim):
@@ -397,9 +399,14 @@ class RayCasterDynamic(SensorBase):
                 self.ray_visualizer.set_visibility(False)
 
     def _debug_vis_callback(self, event):
-        # remove possible inf values
+        # During startup/reset the ray buffer can contain no finite hits. IsaacLab's
+        # VisualizationMarkers rejects an empty marker batch, so skip that frame.
+        if not hasattr(self, "ray_visualizer"):
+            return
         viz_points = self._data.ray_hits_w.reshape(-1, 3)
-        viz_points = viz_points[~torch.any(torch.isinf(viz_points), dim=1)]
+        viz_points = viz_points[torch.all(torch.isfinite(viz_points), dim=1)]
+        if viz_points.shape[0] == 0:
+            return
         # show ray hit positions
         self.ray_visualizer.visualize(viz_points)
 

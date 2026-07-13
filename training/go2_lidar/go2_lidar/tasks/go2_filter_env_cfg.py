@@ -114,6 +114,10 @@ class Go2FilterEnvCfg(DirectRLEnvCfg):
 
     data_collection_type = "none"
     use_predicted_rays = False
+    ray_predictor_checkpoint = "./ray_predictor/ray_predictor/ray_predictor.pt"
+    # Elevation range of the body-frame 30x180 Mid-360 grid.  Go2 mounts the
+    # sensor upright, so its optical -7..+52 degree FOV remains mostly upward.
+    ray_grid_theta_range = (-5.0, 55.0)
     use_keyboard = False
     no_obstacle = False
     use_dynamic_obstacle = False

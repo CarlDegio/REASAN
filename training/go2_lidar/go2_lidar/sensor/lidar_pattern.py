@@ -496,3 +496,87 @@ class Ray3D_3x180_Parallel_5x_PatternCfg(PatternBaseCfg):
 @configclass
 class Ray3D_3x180_Parallel_11x_PatternCfg(PatternBaseCfg):
     func: Callable = ray_3d_3x180_parallel_11x_pattern
+
+
+def _g1_body_envelope_pattern(
+    device: str, horizontal_centers: Sequence[tuple[float, float]]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Horizontal safety rays covering a standing Unitree G1 body envelope.
+
+    The pattern is expressed in ``torso_link``.  Its three planes cover the
+    lower legs, thighs/hips, and torso while the XY centers approximate the
+    sagittal body depth and the arm/shoulder width.  Each center retains the
+    Filter task's 3 x 180 ray structure.
+    """
+    dtype = torch.float32
+    angles = torch.deg2rad(torch.arange(180, device=device, dtype=dtype) * 2.0 - 180.0)
+    directions_2d = torch.stack((torch.cos(angles), torch.sin(angles), torch.zeros_like(angles)), dim=-1)
+    directions = directions_2d.repeat(3, 1)
+
+    # torso_link is about 0.8 m above the ground in the nominal G1 pose.
+    # These planes therefore sample approximately z={0.25, 0.55, 0.85} m.
+    heights = torch.tensor((-0.55, -0.25, 0.05), device=device, dtype=dtype)
+    starts = torch.zeros((3, 180, 3), device=device, dtype=dtype)
+    starts[:, :, 2] = heights[:, None]
+    starts = starts.reshape(-1, 3)
+
+    center_offsets = torch.tensor(horizontal_centers, device=device, dtype=dtype)
+    center_offsets = torch.nn.functional.pad(center_offsets, (0, 1))
+    return (
+        torch.cat([starts + center for center in center_offsets], dim=0),
+        directions.repeat(len(horizontal_centers), 1),
+    )
+
+
+def ray_g1_body_envelope_1x_pattern(cfg: PatternBaseCfg, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    return _g1_body_envelope_pattern(device, ((0.0, 0.0),))
+
+
+def ray_g1_body_envelope_3x_pattern(cfg: PatternBaseCfg, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    return _g1_body_envelope_pattern(device, ((0.0, 0.0), (0.14, 0.0), (-0.12, 0.0)))
+
+
+def ray_g1_body_envelope_5x_pattern(cfg: PatternBaseCfg, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    return _g1_body_envelope_pattern(
+        device,
+        ((0.0, 0.0), (0.14, 0.23), (0.14, -0.23), (-0.12, 0.23), (-0.12, -0.23)),
+    )
+
+
+def ray_g1_body_envelope_11x_pattern(cfg: PatternBaseCfg, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    return _g1_body_envelope_pattern(
+        device,
+        (
+            (0.0, 0.0),
+            (0.14, 0.23),
+            (0.14, 0.0),
+            (0.14, -0.23),
+            (-0.12, 0.23),
+            (-0.12, 0.0),
+            (-0.12, -0.23),
+            (0.0, 0.23),
+            (0.0, -0.23),
+            (0.07, 0.23),
+            (0.07, -0.23),
+        ),
+    )
+
+
+@configclass
+class RayG1BodyEnvelope1xPatternCfg(PatternBaseCfg):
+    func: Callable = ray_g1_body_envelope_1x_pattern
+
+
+@configclass
+class RayG1BodyEnvelope3xPatternCfg(PatternBaseCfg):
+    func: Callable = ray_g1_body_envelope_3x_pattern
+
+
+@configclass
+class RayG1BodyEnvelope5xPatternCfg(PatternBaseCfg):
+    func: Callable = ray_g1_body_envelope_5x_pattern
+
+
+@configclass
+class RayG1BodyEnvelope11xPatternCfg(PatternBaseCfg):
+    func: Callable = ray_g1_body_envelope_11x_pattern

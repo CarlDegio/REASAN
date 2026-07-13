@@ -8,6 +8,12 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import PhysxCfg, SimulationCfg
 from isaaclab.utils import configclass
 
+from go2_lidar.sensor.lidar_pattern import (
+    RayG1BodyEnvelope1xPatternCfg,
+    RayG1BodyEnvelope3xPatternCfg,
+    RayG1BodyEnvelope5xPatternCfg,
+    RayG1BodyEnvelope11xPatternCfg,
+)
 from go2_lidar.tasks.g1_loco_env_cfg import UNITREE_G1_29DOF_CFG
 from go2_lidar.tasks.go2_filter_env_cfg import Go2FilterEnvCfg
 
@@ -90,6 +96,11 @@ class G1FilterEnvCfg(Go2FilterEnvCfg):
     dynamic_friction_range = (0.3, 1.0)
     restitution_range = (0.0, 0.0)
 
+    # G1 mounts Mid-360 upside down.  In torso/body coordinates the useful
+    # optical FOV is approximately -52..+7 degrees; use 30 two-degree bins
+    # centered on the downward-looking region.
+    ray_grid_theta_range = (-55.0, 5.0)
+
     sim = SimulationCfg(
         dt=1 / 200,
         physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -108,8 +119,27 @@ class G1FilterEnvCfg(Go2FilterEnvCfg):
         self._build_observation_space()
         self.sim.render_interval = self.decimation
         self.raycaster.prim_path = "/World/envs/env_.*/Robot/torso_link"
-        self.raycaster.offset.pos = (0.15, 0.0, 0.15)
+        # Public G1 Mid360 URDF extrinsic: torso_link -> mid360_link.  The
+        # near-pi pitch and yaw are essential: G1 mounts the Mid-360 upside
+        # down so its +52 degree optical elevation looks toward the ground.
+        # xyz=(0.0002835, 0.00003, 0.41618), rpy=(0, 3.101, 3.1415).
+        self.raycaster.offset.pos = (0.0002835, 0.00003, 0.41618)
+        self.raycaster.offset.rot = (9.401992e-7, -0.99979404, 4.631725e-5, 0.02029493)
         self.raycaster_measure.prim_path = "/World/envs/env_.*/Robot/torso_link"
         self.raycaster_measure.offset.pos = (0.0, 0.0, 0.0)
         self.raycaster.update_period = self.sim.dt * self.decimation
         self.raycaster_measure.update_period = self.sim.dt * self.decimation
+
+    def set_raycaster_measure_pattern(self, pattern_name: str):
+        """Select the G1-sized body-envelope ground-truth ray pattern."""
+        patterns = {
+            "1x": (RayG1BodyEnvelope1xPatternCfg, 1),
+            "3x": (RayG1BodyEnvelope3xPatternCfg, 3),
+            "5x": (RayG1BodyEnvelope5xPatternCfg, 5),
+            "11x": (RayG1BodyEnvelope11xPatternCfg, 11),
+        }
+        try:
+            pattern_cfg, self.num_ray_centers = patterns[pattern_name]
+        except KeyError as exc:
+            raise ValueError(f"Invalid G1 ray pattern: {pattern_name}") from exc
+        self.raycaster_measure.pattern_cfg = pattern_cfg()

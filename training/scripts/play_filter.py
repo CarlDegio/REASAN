@@ -29,6 +29,7 @@ parser.add_argument("--confirm", action="store_true", default=False)
 parser.add_argument("--with_dyn_obst", action="store_true", default=False)
 parser.add_argument("--obst_speed_range", type=float, nargs=2, default=(0.5, 1.5))
 parser.add_argument("--num_ray_centers", type=str, default="11x", choices=["1x", "3x", "5x", "11x"])
+parser.add_argument("--debug_raycaster", action="store_true", help="Show raw Go2 Mid-360 hit points.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -100,6 +101,10 @@ def main():
     env_cfg.use_dynamic_obstacle = args_cli.with_dyn_obst
     env_cfg.obst_speed_range = args_cli.obst_speed_range
     env_cfg.set_raycaster_measure_pattern(args_cli.num_ray_centers)
+    env_cfg.raycaster.debug_vis = args_cli.debug_raycaster
+    if args_cli.debug_raycaster:
+        env_cfg.raycaster.visualizer_cfg.prim_path = "/Visuals/RawMid360Hits"
+        env_cfg.raycaster.visualizer_cfg.markers["hit"].visual_material.diffuse_color = (0.0, 0.3, 1.0)
 
     # create the environment
     env = gym.make(task_name, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

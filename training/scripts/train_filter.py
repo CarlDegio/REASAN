@@ -23,7 +23,7 @@ parser.add_argument("--use_pred_rays", action="store_true", default=False)
 parser.add_argument("--with_dyn_obst", action="store_true", default=False)
 parser.add_argument("--confirm", action="store_true", default=False)
 parser.add_argument("--obst_speed_range", type=float, nargs=2, default=(0.5, 1.2))
-parser.add_argument("--num_ray_centers", type=str, default="1x", choices=["1x", "3x", "5x", "11x"])
+parser.add_argument("--num_ray_centers", type=str, default=None, choices=["1x", "3x", "5x", "11x"])
 parser.add_argument("--wandb_proj", type=str, default=None)
 parser.add_argument("--task", type=str, default="Unitree-Go2-Filter")
 parser.add_argument("--loco_checkpoint", type=str, default="")
@@ -117,7 +117,12 @@ def main():
     env_cfg.use_dynamic_obstacle = args_cli.with_dyn_obst
     env_cfg.wait_for_key = not args_cli.confirm
     env_cfg.obst_speed_range = args_cli.obst_speed_range
-    env_cfg.set_raycaster_measure_pattern(args_cli.num_ray_centers)
+    # G1 needs multiple XY origins to cover its humanoid body envelope. Keep
+    # the historical Go2 default when the option is not specified explicitly.
+    ray_pattern = args_cli.num_ray_centers
+    if ray_pattern is None:
+        ray_pattern = "5x" if task_name == "Unitree-G1-Filter" else "1x"
+    env_cfg.set_raycaster_measure_pattern(ray_pattern)
     if hasattr(env_cfg, "loco_checkpoint"):
         env_cfg.loco_checkpoint = args_cli.loco_checkpoint
 

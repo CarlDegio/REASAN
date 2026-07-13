@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import math
+from pathlib import Path
 
 import isaaclab.sim as sim_utils
 import isaaclab.utils.math as math_utils
@@ -32,6 +33,30 @@ from go2_lidar.tasks.go2_filter_env_cfg import Go2FilterEnvCfg
 from go2_lidar.utils.hdf5_data_collector import HDF5DatasetWriter_RaySequential
 
 
+class _OnnxRayPredictor:
+    """Single-environment ONNX adapter matching the TorchScript predictor API."""
+
+    def __init__(self, checkpoint: str | Path, device: torch.device | str):
+        import onnxruntime as ort
+
+        self.device = torch.device(device)
+        self.session = ort.InferenceSession(str(checkpoint), providers=["CPUExecutionProvider"])
+        self.input_names = [item.name for item in self.session.get_inputs()]
+        self.output_name = self.session.get_outputs()[0].name
+
+    def __call__(self, grid: torch.Tensor, imu_data: torch.Tensor) -> torch.Tensor:
+        if grid.shape[0] != 1:
+            raise ValueError(f"The provided Ray Predictor ONNX has fixed batch 1, got batch {grid.shape[0]}")
+        output = self.session.run(
+            [self.output_name],
+            {
+                self.input_names[0]: grid.detach().cpu().numpy(),
+                self.input_names[1]: imu_data.detach().cpu().numpy(),
+            },
+        )[0]
+        return torch.from_numpy(output).to(self.device)
+
+
 class Go2FilterEnv(DirectRLEnv):
     cfg: Go2FilterEnvCfg
 
@@ -43,15 +68,19 @@ class Go2FilterEnv(DirectRLEnv):
         self._wait_for_key()
 
         self._ray_predictor = None
+        ray_predictor_path = Path(self.cfg.ray_predictor_checkpoint).expanduser().resolve()
         try:
-            self._ray_predictor = torch.jit.load("./ray_predictor/ray_predictor/ray_predictor.pt")
-            self._ray_predictor.to(self.device).eval()
-            for param in self._ray_predictor.parameters():
-                param.requires_grad = False
-            print("Ray predictor model loaded:")
-            print(self._ray_predictor)
-        except Exception:
-            print("Failed to load ray predictor model. Ray prediction will not be used.")
+            if ray_predictor_path.suffix.lower() == ".onnx":
+                self._ray_predictor = _OnnxRayPredictor(ray_predictor_path, self.device)
+            else:
+                self._ray_predictor = torch.jit.load(str(ray_predictor_path))
+                self._ray_predictor.to(self.device).eval()
+                for param in self._ray_predictor.parameters():
+                    param.requires_grad = False
+            print(f"[INFO] Ray Predictor loaded: {ray_predictor_path}")
+        except Exception as exc:
+            print(f"[WARNING] Failed to load Ray Predictor from {ray_predictor_path}: {exc}")
+            print("[WARNING] Ray prediction will not be used.")
 
         print(f"num ray centers: {self.cfg.num_ray_centers}")
         self._wait_for_key()
@@ -329,8 +358,6 @@ class Go2FilterEnv(DirectRLEnv):
             raise ValueError(f"Expected number of actions {self.cfg.num_high_actions}, but got {actions.shape}")
         self._step_counter += 1
 
-        self._update_debug_draw()
-
         if self._step_counter < 1e10 and self.cfg.is_play_env and self.viewport_camera_controller is not None:
             lookat_pos = self._robot.data.root_pos_w[self.track_env_id].cpu()
             eye_pos = lookat_pos.clone()
@@ -342,6 +369,10 @@ class Go2FilterEnv(DirectRLEnv):
         self._prev_high_actions.append(self._high_actions.clone())
         self._prev_high_actions.pop(0)
         self._high_actions = actions.clone()
+
+        # Draw the command accepted for this step, rather than the previous
+        # step's Filter output.
+        self._update_debug_draw()
 
         self._prev_loco_actions.append(self._loco_actions.clone())
         self._prev_loco_actions.pop(0)
@@ -720,7 +751,7 @@ class Go2FilterEnv(DirectRLEnv):
         grid = self._current_grid[env_id]
 
         phi_range = (-180, 180)
-        theta_range = (-5, 55)
+        theta_range = self.cfg.ray_grid_theta_range
         phi_res_deg = 2
         theta_res_deg = 2
 
@@ -784,10 +815,12 @@ class Go2FilterEnv(DirectRLEnv):
 
         base_pos_w = self._robot.data.root_pos_w.clone()
         base_pos_w[:, 2] += 0.5
-        vel_des_arrow_scale, vel_des_arrow_quat = self._resolve_xy_velocity_to_arrow(self._cmd_buffer[:, :2])
-        vel_arrow_scale, vel_arrow_quat = self._resolve_xy_velocity_to_arrow(self._high_actions[:, :2])
-        # self._cur_vel_viz.visualize(base_pos_w, vel_des_arrow_quat, vel_des_arrow_scale)
-        # self._goal_vel_viz.visualize(base_pos_w, vel_arrow_quat, vel_arrow_scale)
+        input_arrow_scale, input_arrow_quat = self._resolve_xy_velocity_to_arrow(self._cmd_buffer[:, :2])
+        output_arrow_scale, output_arrow_quat = self._resolve_xy_velocity_to_arrow(self._high_actions[:, :2])
+        # Green: raw velocity command received by the Filter.
+        self._goal_vel_viz.visualize(base_pos_w, input_arrow_quat, input_arrow_scale)
+        # Red: filtered safe velocity command sent to the frozen loco policy.
+        self._cur_vel_viz.visualize(base_pos_w, output_arrow_quat, output_arrow_scale)
 
         if hasattr(self, "_viz_ray_goodness"):
             mesh_palette = [
@@ -1148,11 +1181,13 @@ class Go2FilterEnv(DirectRLEnv):
     def preprocess_lidar_frame(
         self,
         phi_range: tuple[float, float] = (-180, 180),
-        theta_range: tuple[float, float] = (-5, 55),
+        theta_range: tuple[float, float] | None = None,
         phi_res_deg: int = 2,
         theta_res_deg: int = 2,
         device: str = "cuda",
     ):
+        if theta_range is None:
+            theta_range = self.cfg.ray_grid_theta_range
         rc_offset = torch.zeros(self.num_envs, 3, device=self.device)
         rc_offset[:, 0] = self.cfg.raycaster.offset.pos[0]
         rc_offset[:, 1] = self.cfg.raycaster.offset.pos[1]
@@ -1176,6 +1211,11 @@ class Go2FilterEnv(DirectRLEnv):
 
         phi_bins = int((phi_range[1] - phi_range[0]) / phi_res_deg)
         theta_bins = int((theta_range[1] - theta_range[0]) / theta_res_deg)
+        if theta_bins != 30:
+            raise ValueError(
+                f"Ray Predictor requires 30 elevation bins, got {theta_bins} from theta_range={theta_range} "
+                f"and theta_res_deg={theta_res_deg}"
+            )
 
         points = ray_hits_b.reshape(-1, num_points, 3)  # (B*H, N, 3)
 
@@ -1304,7 +1344,8 @@ class Go2FilterEnv(DirectRLEnv):
             # fmt: on
             self._debug_draw = _debug_draw.acquire_debug_draw_interface()
             ray_viz_cfg = copy.deepcopy(self.cfg.raycaster.visualizer_cfg)
-            ray_viz_cfg.markers["hit"].visual_material.diffuse_color = (0.0, 0.3, 1.0)
+            ray_viz_cfg.prim_path = "/Visuals/ProcessedActorRays"
+            ray_viz_cfg.markers["hit"].visual_material.diffuse_color = (0.0, 0.9, 1.0)
             ray_viz_cfg.markers["hit"].radius = 0.02
             self._ray_viz = VisualizationMarkers(cfg=ray_viz_cfg)
             self._ray_viz.set_visibility(True)
@@ -1315,8 +1356,8 @@ class Go2FilterEnv(DirectRLEnv):
             self._start_pos_viz = VisualizationMarkers(cfg=start_pos_viz_cfg)
             self._start_pos_viz.set_visibility(True)
 
-            goal_vel_viz_cfg = GREEN_ARROW_X_MARKER_CFG.replace(prim_path="/Visuals/Command/velocity_goal")
-            cur_vel_viz_cfg = RED_ARROW_X_MARKER_CFG.replace(prim_path="/Visuals/Command/velocity_current")
+            goal_vel_viz_cfg = GREEN_ARROW_X_MARKER_CFG.replace(prim_path="/Visuals/Command/filter_input")
+            cur_vel_viz_cfg = RED_ARROW_X_MARKER_CFG.replace(prim_path="/Visuals/Command/filter_output")
             goal_vel_viz_cfg.markers["arrow"].scale = (0.5, 0.5, 0.5)
             cur_vel_viz_cfg.markers["arrow"].scale = (0.5, 0.5, 0.5)
             self._goal_vel_viz = VisualizationMarkers(cfg=goal_vel_viz_cfg)
