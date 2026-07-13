@@ -368,6 +368,9 @@ class Go2FilterEnv(DirectRLEnv):
 
         self._prev_high_actions.append(self._high_actions.clone())
         self._prev_high_actions.pop(0)
+        action_ema_alpha = float(self.cfg.high_action_ema_alpha)
+        if action_ema_alpha > 0.0:
+            actions = action_ema_alpha * self._high_actions + (1.0 - action_ema_alpha) * actions
         self._high_actions = actions.clone()
 
         # Draw the command accepted for this step, rather than the previous

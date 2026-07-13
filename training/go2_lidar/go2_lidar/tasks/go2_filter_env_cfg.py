@@ -111,6 +111,7 @@ class Go2FilterEnvCfg(DirectRLEnvCfg):
     action_space = num_high_actions
     action_scale_loco = 0.25
     is_play_env = False
+    high_action_ema_alpha = 0.0
 
     data_collection_type = "none"
     use_predicted_rays = False
