@@ -136,7 +136,7 @@ class Go2FilterEnvCfg(DirectRLEnvCfg):
     no_obstacle = False
     use_dynamic_obstacle = False
     wait_for_key = True
-    obst_speed_range = (0.5, 1.5)
+    obst_speed_range = (0.3, 0.8)
 
     state_space = 0
     loco_policy = None
