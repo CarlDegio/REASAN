@@ -6,6 +6,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_g1_training_checkpoint_intervals_are_2000_iterations():
+    tasks_dir = ROOT / "go2_lidar" / "go2_lidar" / "tasks"
+
+    loco_cfg = (tasks_dir / "g1_loco_ppo_cfg.py").read_text()
+    filter_cfg = (tasks_dir / "g1_filter_ppo_cfg.py").read_text()
+
+    assert "save_interval = 2000" in loco_cfg
+    assert "save_interval = 2000" in filter_cfg
+
+
 def test_g1_loco_files_and_registration_are_present():
     tasks_dir = ROOT / "go2_lidar" / "go2_lidar" / "tasks"
 

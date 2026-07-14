@@ -20,8 +20,8 @@ EXTENSION_TOML_DATA = toml.load(os.path.join(EXTENSION_PATH, "config", "extensio
 INSTALL_REQUIRES = [
     # generic
     "numpy<2",
-    "torch==2.7.0",
-    "torchvision>=0.14.1",  # ensure compatibility with torch 1.13.1
+    "torch==2.7.0+cu128",
+    "torchvision==0.22.0+cu128",
     "protobuf>=3.20.2,!=5.26.0",
     # configuration management
     "hydra-core",

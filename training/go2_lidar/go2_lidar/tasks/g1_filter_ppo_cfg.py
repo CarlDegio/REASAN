@@ -7,4 +7,5 @@ from go2_lidar.tasks.go2_filter_ppo_cfg import Go2FilterPPOCfg
 
 @configclass
 class G1FilterPPOCfg(Go2FilterPPOCfg):
+    save_interval = 2000
     experiment_name = "g1_filter"

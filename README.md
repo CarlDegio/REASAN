@@ -38,7 +38,7 @@ Install IsaacLab inside the cloned repo:
 ```
 cd training
 cd IsaacLab
-./isaaclab.sh --install
+./isaaclab.sh --install none
 ```
 
 Install rsl_rl:

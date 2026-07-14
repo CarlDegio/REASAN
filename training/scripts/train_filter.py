@@ -64,7 +64,10 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 from rsl_rl.runners import OnPolicyRunner
 
+<<<<<<< HEAD
 torch.backends.cudnn.enabled = True
+=======
+>>>>>>> 9116d5b (add version constrain, add cudnn)
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False

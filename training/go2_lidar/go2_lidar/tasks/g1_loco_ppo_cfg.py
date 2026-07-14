@@ -15,7 +15,7 @@ from isaaclab_rl.rsl_rl import (
 class G1LocoPPOCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 1500
-    save_interval = 1000
+    save_interval = 2000
     experiment_name = "g1_loco"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(

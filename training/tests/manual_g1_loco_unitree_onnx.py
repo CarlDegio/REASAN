@@ -127,8 +127,6 @@ import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 
-torch.backends.cudnn.enabled = False
-
 TASK_NAME = "Unitree-G1-Locomotion"
 
 

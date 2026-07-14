@@ -57,9 +57,6 @@ from isaaclab_rl.rsl_rl.exporter import export_policy_as_jit, export_policy_as_o
 from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 from rsl_rl.runners import OnPolicyRunnerLoco
 
-torch.backends.cudnn.enabled = False
-
-
 def main():
     # parse configuration
     env_cfg = parse_env_cfg(

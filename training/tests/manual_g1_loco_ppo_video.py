@@ -109,8 +109,6 @@ from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 from rsl_rl.runners import OnPolicyRunnerLoco  # noqa: E402
 
-torch.backends.cudnn.enabled = False
-
 TASK_NAME = "Unitree-G1-Locomotion"
 
 

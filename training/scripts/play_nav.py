@@ -66,9 +66,6 @@ from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
 from rsl_rl.modules.actor_critic_recurrent_ray import export_actor_onnx, export_actor_torchscript
 from rsl_rl.runners import OnPolicyRunner
 
-torch.backends.cudnn.enabled = False
-
-
 def main():
     # parse configuration
     env_cfg = parse_env_cfg(
