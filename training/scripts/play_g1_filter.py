@@ -1,6 +1,7 @@
 """Smoke-test the G1 filter environment skeleton with persistent visualization."""
 
 import argparse
+from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
@@ -18,6 +19,20 @@ parser.add_argument(
 parser.add_argument("--random_actions", action="store_true", help="Randomize the filter command every step.")
 parser.add_argument("--onnx_reference", type=str, default="", help="Optional ONNX used only for PT parity checks.")
 parser.add_argument("--with_dyn_obst", action="store_true")
+parser.add_argument(
+    "--collect",
+    choices=("none", "train", "val"),
+    default="none",
+    help="Collect sequential G1 Ray Predictor data; existing target HDF5 files are overwritten.",
+)
+parser.add_argument(
+    "--obst_speed_range",
+    type=float,
+    nargs=2,
+    default=(0.3, 0.8),
+    metavar=("MIN", "MAX"),
+    help="Dynamic-obstacle speed range in m/s.",
+)
 parser.add_argument(
     "--action_ema_alpha",
     type=float,
@@ -235,6 +250,16 @@ class OccupancyViewer:
 def main():
     if not 0.0 <= args_cli.action_ema_alpha < 1.0:
         raise ValueError("--action_ema_alpha must be in [0, 1)")
+    if args_cli.obst_speed_range[0] < 0.0 or args_cli.obst_speed_range[0] > args_cli.obst_speed_range[1]:
+        raise ValueError("--obst_speed_range must satisfy 0 <= MIN <= MAX")
+    collecting = args_cli.collect != "none"
+    if collecting and not args_cli.filter_checkpoint:
+        raise ValueError("--collect requires --filter_checkpoint so data is collected with a trained safety Filter")
+    if collecting and args_cli.use_ray_predictor:
+        raise ValueError("Do not use --use_ray_predictor while collecting Ray Predictor ground-truth data")
+    if collecting:
+        Path("ray_predictor/ray_predictor/data").mkdir(parents=True, exist_ok=True)
+
     cfg = parse_env_cfg("Unitree-G1-Filter", device=args_cli.device, num_envs=args_cli.num_envs)
     cfg.seed = args_cli.seed
     cfg.loco_checkpoint = args_cli.loco_checkpoint
@@ -242,6 +267,8 @@ def main():
     cfg.is_play_env = True
     cfg.high_action_ema_alpha = args_cli.action_ema_alpha
     cfg.use_dynamic_obstacle = args_cli.with_dyn_obst
+    cfg.obst_speed_range = tuple(args_cli.obst_speed_range)
+    cfg.data_collection_type = args_cli.collect
     cfg.use_predicted_rays = args_cli.use_ray_predictor
     cfg.ray_predictor_checkpoint = args_cli.ray_predictor_checkpoint
     cfg.set_raycaster_measure_pattern(args_cli.num_ray_centers)
@@ -289,10 +316,16 @@ def main():
     normalized_action = command.unsqueeze(0).repeat(args_cli.num_envs, 1)
     # In Play, --command is the Filter input.  Do not let the training-time
     # command sampler silently replace it with an unrelated random command.
-    env.unwrapped._cmd_buffer.copy_(normalized_action)
-    env.unwrapped._cmd_resample_accums.zero_()
-    env.unwrapped._cmd_resample_delays.fill_(float("inf"))
-    print(f"[INFO] Play command: vx={command[0].item()}, vy={command[1].item()}, yaw={command[2].item()}")
+    if not collecting:
+        env.unwrapped._cmd_buffer.copy_(normalized_action)
+        env.unwrapped._cmd_resample_accums.zero_()
+        env.unwrapped._cmd_resample_delays.fill_(float("inf"))
+        print(f"[INFO] Play command: vx={command[0].item()}, vy={command[1].item()}, yaw={command[2].item()}")
+    else:
+        print(
+            f"[INFO] Collecting G1 Ray Predictor {args_cli.collect} data with randomized commands; "
+            f"dynamic_obstacles={args_cli.with_dyn_obst}, speed_range={tuple(args_cli.obst_speed_range)} m/s"
+        )
     print(f"[INFO] Filter action EMA alpha: {cfg.high_action_ema_alpha}")
 
     filter_policy = None
@@ -320,9 +353,10 @@ def main():
         with torch.inference_mode():
             # Re-apply after an episode reset as reset logic belongs to the
             # randomized training environment.
-            env.unwrapped._cmd_buffer.copy_(normalized_action)
-            env.unwrapped._cmd_resample_accums.zero_()
-            env.unwrapped._cmd_resample_delays.fill_(float("inf"))
+            if not collecting:
+                env.unwrapped._cmd_buffer.copy_(normalized_action)
+                env.unwrapped._cmd_resample_accums.zero_()
+                env.unwrapped._cmd_resample_delays.fill_(float("inf"))
             if filter_policy is not None:
                 actions = filter_policy(filter_obs)
                 filter_obs, _, _, _ = env.step(actions)
@@ -362,6 +396,8 @@ def main():
         )
     if occupancy_viewer is not None:
         occupancy_viewer.close()
+    if env.unwrapped._data_writer is not None:
+        env.unwrapped._data_writer.close()
     env.close()
     simulation_app.close()
 
