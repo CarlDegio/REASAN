@@ -949,9 +949,6 @@ class Go2FilterEnv(DirectRLEnv):
         actor_rays += math_utils.sample_uniform(-0.05, 0.05, actor_rays.shape, device=self.device)
         assert actor_rays.shape[1] == self.cfg.obs_dims["actor_ray"]
 
-        if self.cfg.is_play_env:
-            actor_rays[:, :] = gt_rays[:, :]
-
         critic_rays = ray_dists[:, : 180 * 3].clone() / 6.0
         assert critic_rays.shape[1] == self.cfg.obs_dims["critic_ray"]
 

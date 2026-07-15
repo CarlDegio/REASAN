@@ -13,6 +13,7 @@ parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--steps", type=int, default=0, help="Zero runs until the window is closed.")
 parser.add_argument("--zmq_filter_endpoint", type=str, default="tcp://*:5558")
 parser.add_argument("--zmq_filter_hz", type=float, default=10.0)
+parser.add_argument("--navila_endpoint", type=str, default="")
 parser.add_argument("--loco_checkpoint", type=str, default="", help="Unitree RL Lab model_*.pt checkpoint.")
 parser.add_argument("--filter_checkpoint", type=str, default="", help="REASEN Filter model_*.pt checkpoint.")
 parser.add_argument(
@@ -38,9 +39,10 @@ parser.add_argument(
 parser.add_argument(
     "--action_ema_alpha",
     type=float,
-    default=0.9,
+    default=0.0,
     help="EMA retention for the Filter's 3-D safe velocity output; 0 disables smoothing.",
 )
+parser.add_argument("--suppress_output_on_zero_input", action="store_true")
 parser.add_argument("--use_ray_predictor", action="store_true")
 parser.add_argument(
     "--ray_predictor_checkpoint",
@@ -78,6 +80,8 @@ from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 from filter_velocity_zmq import FilterVelocityPublisher  # noqa: E402
+from filter_play_control import suppress_output_for_zero_input  # noqa: E402
+from navila_velocity_zmq import NavilaVelocitySubscriber  # noqa: E402
 
 
 class OccupancyViewer:
@@ -317,6 +321,11 @@ def main():
     if torch.any(command < lower) or torch.any(command > upper):
         raise ValueError(f"Command {tuple(args_cli.command)} is outside [{cfg.command_lower}, {cfg.command_upper}]")
     normalized_action = command.unsqueeze(0).repeat(args_cli.num_envs, 1)
+    navila_subscriber = None
+    if args_cli.navila_endpoint:
+        navila_subscriber = NavilaVelocitySubscriber(args_cli.navila_endpoint)
+        normalized_action.zero_()
+        print(f"[NAVILA] Listening for velocity commands on {args_cli.navila_endpoint}")
     # In Play, --command is the Filter input.  Do not let the training-time
     # command sampler silently replace it with an unrelated random command.
     if not collecting:
@@ -363,6 +372,11 @@ def main():
     measured_body_velocity_sum = torch.zeros(3, device=env.unwrapped.device)
     while simulation_app.is_running() and (args_cli.steps == 0 or step < args_cli.steps):
         with torch.inference_mode():
+            if navila_subscriber is not None:
+                navila_command = torch.tensor(
+                    navila_subscriber.poll(), dtype=torch.float32, device=env.unwrapped.device
+                ).clamp(lower, upper)
+                normalized_action.copy_(navila_command.unsqueeze(0).expand_as(normalized_action))
             # Re-apply after an episode reset as reset logic belongs to the
             # randomized training environment.
             if not collecting:
@@ -371,6 +385,10 @@ def main():
                 env.unwrapped._cmd_resample_delays.fill_(float("inf"))
             if filter_policy is not None:
                 actions = filter_policy(filter_obs)
+                if args_cli.suppress_output_on_zero_input:
+                    actions = suppress_output_for_zero_input(
+                        actions, normalized_action, env.unwrapped._high_actions
+                    )
                 filter_obs, _, _, _ = env.step(actions)
             else:
                 actions = (
@@ -413,6 +431,8 @@ def main():
         occupancy_viewer.close()
     if env.unwrapped._data_writer is not None:
         env.unwrapped._data_writer.close()
+    if navila_subscriber is not None:
+        navila_subscriber.close()
     velocity_publisher.close()
     env.close()
     simulation_app.close()
