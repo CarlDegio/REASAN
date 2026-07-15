@@ -11,6 +11,8 @@ parser = argparse.ArgumentParser(description="Play the Unitree G1 filter environ
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--steps", type=int, default=0, help="Zero runs until the window is closed.")
+parser.add_argument("--zmq_filter_endpoint", type=str, default="tcp://*:5558")
+parser.add_argument("--zmq_filter_hz", type=float, default=10.0)
 parser.add_argument("--loco_checkpoint", type=str, default="", help="Unitree RL Lab model_*.pt checkpoint.")
 parser.add_argument("--filter_checkpoint", type=str, default="", help="REASEN Filter model_*.pt checkpoint.")
 parser.add_argument(
@@ -75,6 +77,7 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
 from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
+from filter_velocity_zmq import FilterVelocityPublisher  # noqa: E402
 
 
 class OccupancyViewer:
@@ -328,6 +331,15 @@ def main():
         )
     print(f"[INFO] Filter action EMA alpha: {cfg.high_action_ema_alpha}")
 
+    env_step_hz = 1.0 / (cfg.sim.dt * cfg.decimation)
+    publish_interval_steps = max(1, round(env_step_hz / args_cli.zmq_filter_hz))
+    actual_publish_hz = env_step_hz / publish_interval_steps
+    velocity_publisher = FilterVelocityPublisher(args_cli.zmq_filter_endpoint)
+    print(
+        f"[INFO] Filter velocity ZMQ: {args_cli.zmq_filter_endpoint}, "
+        f"requested={args_cli.zmq_filter_hz:g} Hz, actual={actual_publish_hz:g} Hz"
+    )
+
     filter_policy = None
     filter_obs = None
     if args_cli.filter_checkpoint:
@@ -367,6 +379,9 @@ def main():
                     else normalized_action
                 )
                 env.step(actions)
+            if step % publish_interval_steps == 0:
+                safe_velocity = env.unwrapped._high_actions[0].detach().cpu().tolist()
+                velocity_publisher.publish(safe_velocity)
             measured_body_velocity_sum += env.unwrapped._robot.data.root_lin_vel_b[0]
             if occupancy_viewer is not None:
                 occupancy_viewer.render()
@@ -398,6 +413,7 @@ def main():
         occupancy_viewer.close()
     if env.unwrapped._data_writer is not None:
         env.unwrapped._data_writer.close()
+    velocity_publisher.close()
     env.close()
     simulation_app.close()
 
